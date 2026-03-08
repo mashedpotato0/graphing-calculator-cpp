@@ -35,6 +35,15 @@ struct SliderAnimData {
 };
 static std::vector<std::unique_ptr<SliderAnimData>> slider_anims;
 
+struct SettingsUI {
+  GtkWidget *x_min_spin;
+  GtkWidget *x_max_spin;
+  GtkWidget *y_min_spin;
+  GtkWidget *y_max_spin;
+} settings_ui;
+
+static bool updating_ui = false;
+
 static gboolean slider_anim_tick(gpointer data) {
   SliderAnimData *anim = static_cast<SliderAnimData *>(data);
   if (!anim->playing)
@@ -77,6 +86,7 @@ struct EquationData {
   std::string error;
   int color_idx;
   bool visible = true;
+  GtkWidget *main_area; // Reference to the main graph area
 };
 
 static void add_equation_row(GtkWidget *vbox, GtkWidget *drawing_area);
@@ -89,6 +99,35 @@ static void on_draw(GtkDrawingArea *area, cairo_t *cr, int width, int height,
   (void)area;
   (void)data;
   plotter.render(cr, width, height, eval_engine);
+}
+
+static void sync_settings_ui(GtkWidget *area) {
+  if (updating_ui)
+    return;
+  updating_ui = true;
+
+  int w = gtk_widget_get_width(area);
+  int h = gtk_widget_get_height(area);
+
+  x_axis_min = plotter.center_x - (w / 2.0) / plotter.zoom_x;
+  x_axis_max = plotter.center_x + (w / 2.0) / plotter.zoom_x;
+  y_axis_min = plotter.center_y - (h / 2.0) / plotter.zoom_y;
+  y_axis_max = plotter.center_y + (h / 2.0) / plotter.zoom_y;
+
+  if (settings_ui.x_min_spin)
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.x_min_spin),
+                              x_axis_min);
+  if (settings_ui.x_max_spin)
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.x_max_spin),
+                              x_axis_max);
+  if (settings_ui.y_min_spin)
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.y_min_spin),
+                              y_axis_min);
+  if (settings_ui.y_max_spin)
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.y_max_spin),
+                              y_axis_max);
+
+  updating_ui = false;
 }
 
 static void update_plotter(GtkWidget *area) {
@@ -105,6 +144,8 @@ static void update_plotter(GtkWidget *area) {
   // First pass: Process global assignments (e.g., a = 5, f(x) = sin(x))
   eval_engine.ctx.vars.clear();
   eval_engine.ctx.funcs.clear();
+  eval_engine.load_constants();
+  eval_engine.load_builtins();
 
   for (const auto &eq : equations) {
     std::string s = eq->editor->get_expression();
@@ -310,6 +351,22 @@ static void update_plotter(GtkWidget *area) {
       }
     } else {
       gtk_widget_set_visible(eq->result_label, false);
+    }
+
+    // Numerical result display for assignments (e.g. a = sin(30))
+    if (!is_plot && eq->ast) {
+      try {
+        double res = eq->ast->eval(eval_engine.ctx);
+        char buf[64];
+        if (std::abs(res - std::round(res)) < 1e-9)
+          snprintf(buf, sizeof(buf), "= %d", (int)std::round(res));
+        else
+          snprintf(buf, sizeof(buf), "= %.6g", res);
+        gtk_label_set_text(GTK_LABEL(eq->result_label), buf);
+        gtk_widget_set_visible(eq->result_label, true);
+      } catch (...) {
+        gtk_widget_set_visible(eq->result_label, false);
+      }
     }
   }
   if (area)
@@ -644,6 +701,40 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   gtk_box_append(GTK_BOX(eq->slider_box), slider_hbox);
 }
 
+static void on_color_indicator_draw(GtkDrawingArea *area, cairo_t *cr,
+                                    int width, int height, gpointer data) {
+  EquationData *eq = (EquationData *)data;
+  double r = 0, g = 0, b = 0;
+  const double COLORS[][3] = {{0.96, 0.62, 0.04},
+                              {0.38, 0.65, 0.98},
+                              {0.20, 0.83, 0.60},
+                              {0.97, 0.44, 0.44},
+                              {0.75, 0.52, 0.99}};
+  int idx = eq->color_idx % 5;
+  r = COLORS[idx][0];
+  g = COLORS[idx][1];
+  b = COLORS[idx][2];
+
+  double cx = width / 2.0;
+  double cy = height / 2.0;
+  double radius = std::min(width, height) / 2.0 - 2;
+
+  cairo_arc(cr, cx, cy, radius, 0, 2 * M_PI);
+  if (eq->visible) {
+    cairo_set_source_rgb(cr, r, g, b);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.2);
+    cairo_set_line_width(cr, 1.5);
+    cairo_stroke(cr);
+  } else {
+    cairo_set_source_rgba(cr, r, g, b, 0.3);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgba(cr, 0.5, 0.5, 0.5, 0.5);
+    cairo_set_line_width(cr, 1.0);
+    cairo_stroke(cr);
+  }
+}
+
 static void on_color_pressed(GtkGestureClick *gesture, int n_press, double x,
                              double y, gpointer data) {
   (void)n_press;
@@ -655,8 +746,9 @@ static void on_color_pressed(GtkGestureClick *gesture, int n_press, double x,
 
   if (button == 1) { // Left click
     eq->visible = !eq->visible;
-    gtk_widget_set_opacity(eq->color_btn, eq->visible ? 1.0 : 0.3);
-    update_plotter(eq->editor_area);
+    gtk_widget_queue_draw(eq->color_btn);
+    update_plotter(eq->main_area);
+    sync_settings_ui(eq->main_area);
   } else if (button == 3) { // Right click
     GtkWidget *popover = gtk_popover_new();
     gtk_widget_set_parent(popover, eq->color_btn);
@@ -693,10 +785,9 @@ static void on_color_pressed(GtkGestureClick *gesture, int n_press, double x,
                 snprintf(old_c, sizeof(old_c), "color-%d",
                          c->eq->color_idx % 5);
                 snprintf(new_c, sizeof(new_c), "color-%d", c->idx % 5);
-                gtk_widget_remove_css_class(c->eq->color_btn, old_c);
-                gtk_widget_add_css_class(c->eq->color_btn, new_c);
                 c->eq->color_idx = c->idx;
-                update_plotter(c->eq->editor_area);
+                gtk_widget_queue_draw(c->eq->color_btn);
+                update_plotter(c->eq->main_area);
                 gtk_popover_popdown(GTK_POPOVER(c->pop));
               },
           choice,
@@ -721,6 +812,7 @@ static void add_equation_row(GtkWidget *vbox, GtkWidget *drawing_area) {
   eq->color_idx = color_counter++;
   eq->result_ast = nullptr;
   eq->symbolic_result_area = nullptr;
+  eq->main_area = drawing_area;
 
   eq->row_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
   gtk_widget_add_css_class(eq->row_box, "equation-row");
@@ -728,16 +820,15 @@ static void add_equation_row(GtkWidget *vbox, GtkWidget *drawing_area) {
 
   GtkWidget *top_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
 
-  // Color indicator
-  eq->color_btn = gtk_button_new();
-  gtk_widget_set_size_request(eq->color_btn, 26, 26);
+  // Color indicator (now a DrawingArea for better event reliability)
+  eq->color_btn = gtk_drawing_area_new();
+  gtk_widget_set_size_request(eq->color_btn, 24, 24);
   gtk_widget_set_valign(eq->color_btn, GTK_ALIGN_CENTER);
   gtk_widget_set_halign(eq->color_btn, GTK_ALIGN_CENTER);
   gtk_widget_set_margin_start(eq->color_btn, 4);
-  char color_class[32];
-  snprintf(color_class, sizeof(color_class), "color-%d", eq->color_idx % 5);
-  gtk_widget_add_css_class(eq->color_btn, "color-indicator");
-  gtk_widget_add_css_class(eq->color_btn, color_class);
+  gtk_widget_set_margin_end(eq->color_btn, 4);
+  gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(eq->color_btn),
+                                 on_color_indicator_draw, eq, NULL);
 
   GtkGesture *color_click = gtk_gesture_click_new();
   gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(color_click),
@@ -829,6 +920,7 @@ static void on_drag_update(GtkGestureDrag *gesture, double x, double y,
   // x,y are offsets from drag start point
   plotter.center_x = drag_start_center_x - x / plotter.zoom_x;
   plotter.center_y = drag_start_center_y + y / plotter.zoom_y;
+  sync_settings_ui(area);
   gtk_widget_queue_draw(area);
 }
 
@@ -870,6 +962,7 @@ static gboolean on_scroll(GtkEventControllerScroll *scroll, double dx,
   plotter.center_x = math_x - (mx - w / 2.0) / plotter.zoom_x;
   plotter.center_y = math_y + (my - h / 2.0) / plotter.zoom_y;
 
+  sync_settings_ui(area);
   gtk_widget_queue_draw(area);
   return TRUE;
 }
@@ -894,13 +987,12 @@ static void on_settings_arrows_toggled(GtkCheckButton *btn, gpointer data) {
   GtkWidget *area = GTK_WIDGET(data);
   gtk_widget_queue_draw(area);
 }
-static void on_settings_axes_toggled(GtkCheckButton *btn, gpointer data) {
-  plotter.settings.show_main_axes = gtk_check_button_get_active(btn);
-  GtkWidget *area = GTK_WIDGET(data);
-  gtk_widget_queue_draw(area);
-}
 static void on_settings_lock_viewport_toggled(GtkCheckButton *btn, gpointer) {
   plotter.settings.lock_viewport = gtk_check_button_get_active(btn);
+}
+static void on_settings_main_axis_toggled(GtkCheckButton *btn, gpointer data) {
+  plotter.settings.show_main_axis = gtk_check_button_get_active(btn);
+  update_plotter(GTK_WIDGET(data));
 }
 static void on_settings_lock_aspect_toggled(GtkCheckButton *btn, gpointer) {
   plotter.settings.lock_aspect_ratio = gtk_check_button_get_active(btn);
@@ -912,6 +1004,8 @@ static void on_settings_radians_toggled(GtkCheckButton *btn, gpointer data) {
   gtk_widget_queue_draw(area);
 }
 static void on_x_min_changed(GtkSpinButton *spin, gpointer data) {
+  if (updating_ui)
+    return;
   x_axis_min = gtk_spin_button_get_value(spin);
   GtkWidget *area = GTK_WIDGET(data);
   int w = gtk_widget_get_width(area);
@@ -921,16 +1015,23 @@ static void on_x_min_changed(GtkSpinButton *spin, gpointer data) {
     plotter.zoom_x = w / range_x;
     if (plotter.settings.lock_aspect_ratio) {
       plotter.zoom_y = plotter.zoom_x;
-      // Adjust y bounds to show locked aspect
       int h = gtk_widget_get_height(area);
       double range_y = h / plotter.zoom_y;
       y_axis_min = plotter.center_y - range_y / 2.0;
       y_axis_max = plotter.center_y + range_y / 2.0;
+      updating_ui = true;
+      gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.y_min_spin),
+                                y_axis_min);
+      gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.y_max_spin),
+                                y_axis_max);
+      updating_ui = false;
     }
+    gtk_widget_queue_draw(area);
   }
-  gtk_widget_queue_draw(area);
 }
 static void on_x_max_changed(GtkSpinButton *spin, gpointer data) {
+  if (updating_ui)
+    return;
   x_axis_max = gtk_spin_button_get_value(spin);
   GtkWidget *area = GTK_WIDGET(data);
   int w = gtk_widget_get_width(area);
@@ -944,11 +1045,19 @@ static void on_x_max_changed(GtkSpinButton *spin, gpointer data) {
       double range_y = h / plotter.zoom_y;
       y_axis_min = plotter.center_y - range_y / 2.0;
       y_axis_max = plotter.center_y + range_y / 2.0;
+      updating_ui = true;
+      gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.y_min_spin),
+                                y_axis_min);
+      gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.y_max_spin),
+                                y_axis_max);
+      updating_ui = false;
     }
+    gtk_widget_queue_draw(area);
   }
-  gtk_widget_queue_draw(area);
 }
 static void on_y_min_changed(GtkSpinButton *spin, gpointer data) {
+  if (updating_ui)
+    return;
   y_axis_min = gtk_spin_button_get_value(spin);
   GtkWidget *area = GTK_WIDGET(data);
   int h = gtk_widget_get_height(area);
@@ -962,11 +1071,19 @@ static void on_y_min_changed(GtkSpinButton *spin, gpointer data) {
       double range_x = w / plotter.zoom_x;
       x_axis_min = plotter.center_x - range_x / 2.0;
       x_axis_max = plotter.center_x + range_x / 2.0;
+      updating_ui = true;
+      gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.x_min_spin),
+                                x_axis_min);
+      gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.x_max_spin),
+                                x_axis_max);
+      updating_ui = false;
     }
+    gtk_widget_queue_draw(area);
   }
-  gtk_widget_queue_draw(area);
 }
 static void on_y_max_changed(GtkSpinButton *spin, gpointer data) {
+  if (updating_ui)
+    return;
   y_axis_max = gtk_spin_button_get_value(spin);
   GtkWidget *area = GTK_WIDGET(data);
   int h = gtk_widget_get_height(area);
@@ -980,9 +1097,15 @@ static void on_y_max_changed(GtkSpinButton *spin, gpointer data) {
       double range_x = w / plotter.zoom_x;
       x_axis_min = plotter.center_x - range_x / 2.0;
       x_axis_max = plotter.center_x + range_x / 2.0;
+      updating_ui = true;
+      gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.x_min_spin),
+                                x_axis_min);
+      gtk_spin_button_set_value(GTK_SPIN_BUTTON(settings_ui.x_max_spin),
+                                x_axis_max);
+      updating_ui = false;
     }
+    gtk_widget_queue_draw(area);
   }
-  gtk_widget_queue_draw(area);
 }
 static void on_x_step_changed(GtkSpinButton *spin, gpointer) {
   plotter.settings.x_step = gtk_spin_button_get_value(spin);
@@ -1118,10 +1241,10 @@ static void activate(GtkApplication *app, gpointer user_data) {
   GtkWidget *settings_btn =
       gtk_button_new_from_icon_name("emblem-system-symbolic");
   gtk_widget_add_css_class(settings_btn, "settings-btn");
-  gtk_widget_set_halign(settings_btn, GTK_ALIGN_END);
+  gtk_widget_set_halign(settings_btn, GTK_ALIGN_START);
   gtk_widget_set_valign(settings_btn, GTK_ALIGN_START);
   gtk_widget_set_margin_top(settings_btn, 10);
-  gtk_widget_set_margin_end(settings_btn, 10);
+  gtk_widget_set_margin_start(settings_btn, 10);
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), settings_btn);
 
   // Build settings popover
@@ -1177,14 +1300,6 @@ static void activate(GtkApplication *app, gpointer user_data) {
                    G_CALLBACK(on_settings_arrows_toggled), area);
   gtk_box_append(GTK_BOX(settings_box), arrows_check);
 
-  GtkWidget *axes_check = gtk_check_button_new_with_label("Main Axes");
-  gtk_check_button_set_active(GTK_CHECK_BUTTON(axes_check),
-                              plotter.settings.show_main_axes);
-  gtk_widget_add_css_class(axes_check, "settings-check");
-  g_signal_connect(axes_check, "toggled", G_CALLBACK(on_settings_axes_toggled),
-                   area);
-  gtk_box_append(GTK_BOX(settings_box), axes_check);
-
   // --- X-Axis Section ---
   GtkWidget *sep1 = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
   gtk_box_append(GTK_BOX(settings_box), sep1);
@@ -1198,6 +1313,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
   GtkWidget *x_min_lbl = gtk_label_new("Min:");
   gtk_widget_add_css_class(x_min_lbl, "settings-label");
   GtkWidget *x_min_spin = gtk_spin_button_new_with_range(-10000, 10000, 1);
+  settings_ui.x_min_spin = x_min_spin;
   gtk_spin_button_set_value(GTK_SPIN_BUTTON(x_min_spin), x_axis_min);
   gtk_widget_add_css_class(x_min_spin, "settings-spin");
   g_signal_connect(x_min_spin, "value-changed", G_CALLBACK(on_x_min_changed),
@@ -1206,6 +1322,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
   GtkWidget *x_max_lbl = gtk_label_new("Max:");
   gtk_widget_add_css_class(x_max_lbl, "settings-label");
   GtkWidget *x_max_spin = gtk_spin_button_new_with_range(-10000, 10000, 1);
+  settings_ui.x_max_spin = x_max_spin;
   gtk_spin_button_set_value(GTK_SPIN_BUTTON(x_max_spin), x_axis_max);
   gtk_widget_add_css_class(x_max_spin, "settings-spin");
   g_signal_connect(x_max_spin, "value-changed", G_CALLBACK(on_x_max_changed),
@@ -1241,6 +1358,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
   GtkWidget *y_min_lbl = gtk_label_new("Min:");
   gtk_widget_add_css_class(y_min_lbl, "settings-label");
   GtkWidget *y_min_spin = gtk_spin_button_new_with_range(-10000, 10000, 1);
+  settings_ui.y_min_spin = y_min_spin;
   gtk_spin_button_set_value(GTK_SPIN_BUTTON(y_min_spin), y_axis_min);
   gtk_widget_add_css_class(y_min_spin, "settings-spin");
   g_signal_connect(y_min_spin, "value-changed", G_CALLBACK(on_y_min_changed),
@@ -1249,6 +1367,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
   GtkWidget *y_max_lbl = gtk_label_new("Max:");
   gtk_widget_add_css_class(y_max_lbl, "settings-label");
   GtkWidget *y_max_spin = gtk_spin_button_new_with_range(-10000, 10000, 1);
+  settings_ui.y_max_spin = y_max_spin;
   gtk_spin_button_set_value(GTK_SPIN_BUTTON(y_max_spin), y_axis_max);
   gtk_widget_add_css_class(y_max_spin, "settings-spin");
   g_signal_connect(y_max_spin, "value-changed", G_CALLBACK(on_y_max_changed),
@@ -1287,6 +1406,14 @@ static void activate(GtkApplication *app, gpointer user_data) {
   g_signal_connect(lock_check, "toggled",
                    G_CALLBACK(on_settings_lock_viewport_toggled), area);
   gtk_box_append(GTK_BOX(settings_box), lock_check);
+
+  GtkWidget *axes_check = gtk_check_button_new_with_label("Show Main Axes");
+  gtk_check_button_set_active(GTK_CHECK_BUTTON(axes_check),
+                              plotter.settings.show_main_axis);
+  gtk_widget_add_css_class(axes_check, "settings-check");
+  g_signal_connect(axes_check, "toggled",
+                   G_CALLBACK(on_settings_main_axis_toggled), area);
+  gtk_box_append(GTK_BOX(settings_box), axes_check);
 
   GtkWidget *aspect_check =
       gtk_check_button_new_with_label("Lock Aspect Ratio");

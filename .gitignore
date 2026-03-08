@@ -3,6 +3,9 @@ calc
 repl
 repl_test
 quick_test
+reproduce_crash.cpp
+reproduce_crash
+
 *.o
 *.a
 *.so
@@ -19,4 +22,5 @@ venv/
 .idea/
 .DS_Store
 *.swp
+
 

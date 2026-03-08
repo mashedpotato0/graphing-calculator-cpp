@@ -21,8 +21,8 @@ public:
     bool show_grid = true;
     bool show_axis_numbers = true;
     bool show_minor_gridlines = true;
-    bool show_arrows = false;
-    bool show_main_axes = true;
+    bool show_main_axis = true;
+    bool show_arrows = true;
     bool lock_aspect_ratio = true;
     bool lock_viewport = false;
     bool use_radians = true;
@@ -45,7 +45,7 @@ public:
 
   void render(cairo_t *cr, int width, int height, evaluator &eval) {
     // Clear background
-    cairo_set_source_rgb(cr, 0.05, 0.07, 0.12);
+    cairo_set_source_rgb(cr, 0.05, 0.07, 0.1);
     cairo_paint(cr);
 
     // Transformation functions
@@ -72,7 +72,7 @@ public:
     double sy0 = to_screen_y(0);
 
     // Draw axes
-    if (settings.show_main_axes) {
+    if (settings.show_main_axis) {
       cairo_set_source_rgb(cr, 0.3, 0.4, 0.6);
       cairo_set_line_width(cr, 2.0);
 
@@ -109,12 +109,22 @@ public:
           continue; // Skip zero
         double sx = to_screen_x(x);
         char buf[32];
+        int precision = 0;
+        if (step_x < 0.01)
+          precision = 4;
+        else if (step_x < 0.1)
+          precision = 3;
+        else if (step_x < 1.0)
+          precision = 2;
+        else if (step_x < 10.0)
+          precision = 1;
+
         if (std::abs(x) >= 1e6 || (std::abs(x) < 1e-3 && std::abs(x) > 0))
           snprintf(buf, sizeof(buf), "%.1e", x);
-        else if (std::abs(x - std::round(x)) < 1e-9)
+        else if (std::abs(x - std::round(x)) < 1e-10)
           snprintf(buf, sizeof(buf), "%d", (int)std::round(x));
         else
-          snprintf(buf, sizeof(buf), "%.2f", x);
+          snprintf(buf, sizeof(buf), "%.*f", precision, x);
 
         cairo_move_to(cr, sx + 2, sy0 + 15);
         cairo_show_text(cr, buf);
@@ -131,10 +141,20 @@ public:
           continue; // Skip zero
         double sy = to_screen_y(y);
         char buf[32];
-        if (std::abs(y - std::round(y)) < 1e-9)
+        int precision = 0;
+        if (step_y < 0.01)
+          precision = 4;
+        else if (step_y < 0.1)
+          precision = 3;
+        else if (step_y < 1.0)
+          precision = 2;
+        else if (step_y < 10.0)
+          precision = 1;
+
+        if (std::abs(y - std::round(y)) < 1e-10)
           snprintf(buf, sizeof(buf), "%d", (int)std::round(y));
         else
-          snprintf(buf, sizeof(buf), "%.2f", y);
+          snprintf(buf, sizeof(buf), "%.*f", precision, y);
 
         cairo_text_extents_t ext;
         cairo_text_extents(cr, buf, &ext);
