@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,7 @@ struct context {
   std::map<std::string, double> vars;
   std::map<std::string, user_func> funcs;
   std::map<std::string, std::function<double(double)>> builtins;
+  bool use_radians = true;
 };
 
 struct expr {
@@ -44,6 +46,7 @@ struct expr {
   virtual bool is_number() const { return false; }
   virtual std::optional<double> get_number() const { return std::nullopt; }
   virtual bool is_negative() const { return false; }
+  virtual void collect_variables(std::set<std::string> &vars) const = 0;
 };
 
 struct number : expr {
@@ -83,6 +86,7 @@ struct number : expr {
   std::optional<double> get_number() const override { return val; }
   bool is_negative() const override { return val < -1e-12; }
   bool is_integer() const { return std::abs(val - std::round(val)) < 1e-9; }
+  void collect_variables(std::set<std::string> &) const override {}
 };
 
 struct named_constant : expr {
@@ -97,6 +101,8 @@ struct named_constant : expr {
       value = 1.6180339887498948482;
     else if (n == "tau")
       value = 6.28318530717958647692;
+    else if (n == "inf" || n == "infty")
+      value = HUGE_VAL;
     else
       value = 0.0;
   }
@@ -122,6 +128,7 @@ struct named_constant : expr {
   }
   bool is_number() const override { return true; }
   std::optional<double> get_number() const override { return value; }
+  void collect_variables(std::set<std::string> &) const override {}
 };
 
 struct variable : expr {
@@ -151,6 +158,9 @@ struct variable : expr {
     auto o = dynamic_cast<const variable *>(&other);
     return o && name == o->name;
   }
+  void collect_variables(std::set<std::string> &vars) const override {
+    vars.insert(name);
+  }
 };
 
 struct add : expr {
@@ -158,12 +168,14 @@ struct add : expr {
   add(std::unique_ptr<expr> l, std::unique_ptr<expr> r)
       : left(std::move(l)), right(std::move(r)) {}
   double eval(context &ctx) const override {
+    if (!left || !right)
+      return 0.0;
     return left->eval(ctx) + right->eval(ctx);
   }
   std::string to_string() const override {
-    std::string l = left->to_string();
-    std::string r = right->to_string();
-    if (right->is_negative()) {
+    std::string l = left ? left->to_string() : "?";
+    std::string r = right ? right->to_string() : "?";
+    if (right && right->is_negative()) {
       // If r is negative, it might already start with '-' or '\frac{-...'
       // But if it's a multiply like -1*x, it starts with '-'
       return "(" + l + r + ")";
@@ -175,21 +187,36 @@ struct add : expr {
     return "(" + l + "+" + r + ")";
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<add>(left->clone(), right->clone());
+    return std::make_unique<add>(left ? left->clone() : nullptr,
+                                 right ? right->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &var) const override;
   std::unique_ptr<expr> simplify() const override;
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
-    return std::make_unique<add>(left->substitute(v, r),
-                                 right->substitute(v, r));
+    return std::make_unique<add>(left ? left->substitute(v, r) : nullptr,
+                                 right ? right->substitute(v, r) : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    return std::make_unique<add>(left->expand(c), right->expand(c))->simplify();
+    return std::make_unique<add>(left ? left->expand(c) : nullptr,
+                                 right ? right->expand(c) : nullptr)
+        ->simplify();
   }
   bool equals(const expr &other) const override {
     auto o = dynamic_cast<const add *>(&other);
-    return o && left->equals(*o->left) && right->equals(*o->right);
+    if (!o)
+      return false;
+    bool l_eq =
+        (!left && !o->left) || (left && o->left && left->equals(*o->left));
+    bool r_eq = (!right && !o->right) ||
+                (right && o->right && right->equals(*o->right));
+    return l_eq && r_eq;
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (left)
+      left->collect_variables(vars);
+    if (right)
+      right->collect_variables(vars);
   }
 };
 
@@ -198,22 +225,24 @@ struct multiply : expr {
   multiply(std::unique_ptr<expr> l, std::unique_ptr<expr> r)
       : left(std::move(l)), right(std::move(r)) {}
   double eval(context &ctx) const override {
+    if (!left || !right)
+      return 0.0;
     return left->eval(ctx) * right->eval(ctx);
   }
   std::string to_string() const override {
-    if (left->is_number() &&
-        std::abs(static_cast<number *>(left.get())->val + 1.0) < 1e-9)
-      return "-" + right->to_string();
+    if (left && left->is_number() && std::abs(*left->get_number() + 1.0) < 1e-9)
+      return "-" + (right ? right->to_string() : "?");
 
     // Implicit multiplication: number before variable or brace
-    if (left->is_number() && !right->is_number()) {
+    if (left && right && left->is_number() && !right->is_number()) {
       auto r_str = right->to_string();
       if (!r_str.empty() && r_str[0] != '\\') { // avoid 2\frac{...} maybe
         // Actually 2x is fine. 2\sin{x} is fine.
         return left->to_string() + r_str;
       }
     }
-    return left->to_string() + "*" + right->to_string();
+    return (left ? left->to_string() : "?") + "*" +
+           (right ? right->to_string() : "?");
   }
   bool is_negative() const override {
     if (auto n = dynamic_cast<const number *>(left.get())) {
@@ -222,18 +251,22 @@ struct multiply : expr {
     return false;
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<multiply>(left->clone(), right->clone());
+    return std::make_unique<multiply>(left ? left->clone() : nullptr,
+                                      right ? right->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &var) const override;
   std::unique_ptr<expr> simplify() const override;
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
-    return std::make_unique<multiply>(left->substitute(v, r),
-                                      right->substitute(v, r));
+    return std::make_unique<multiply>(left ? left->substitute(v, r) : nullptr,
+                                      right ? right->substitute(v, r)
+                                            : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    auto el = left->expand(c);
-    auto er = right->expand(c);
+    auto el = left ? left->expand(c) : nullptr;
+    auto er = right ? right->expand(c) : nullptr;
+    if (!el || !er)
+      return std::make_unique<multiply>(std::move(el), std::move(er));
 
     // distribute: (a+b)*c = ac + bc
     if (auto la = dynamic_cast<add *>(el.get())) {
@@ -258,7 +291,19 @@ struct multiply : expr {
   }
   bool equals(const expr &other) const override {
     auto o = dynamic_cast<const multiply *>(&other);
-    return o && left->equals(*o->left) && right->equals(*o->right);
+    if (!o)
+      return false;
+    bool l_eq =
+        (!left && !o->left) || (left && o->left && left->equals(*o->left));
+    bool r_eq = (!right && !o->right) ||
+                (right && o->right && right->equals(*o->right));
+    return l_eq && r_eq;
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (left)
+      left->collect_variables(vars);
+    if (right)
+      right->collect_variables(vars);
   }
 };
 
@@ -267,28 +312,47 @@ struct divide : expr {
   divide(std::unique_ptr<expr> l, std::unique_ptr<expr> r)
       : left(std::move(l)), right(std::move(r)) {}
   double eval(context &ctx) const override {
-    return left->eval(ctx) / right->eval(ctx);
+    if (!left || !right)
+      return 0.0;
+    double r = right->eval(ctx);
+    if (std::abs(r) < 1e-12)
+      return 0.0;
+    return left->eval(ctx) / r;
   }
   std::string to_string() const override {
-    return "\\frac{" + left->to_string() + "}{" + right->to_string() + "}";
+    return "\\frac{" + (left ? left->to_string() : "?") + "}{" +
+           (right ? right->to_string() : "?") + "}";
   }
   bool is_negative() const override { return left->is_negative(); }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<divide>(left->clone(), right->clone());
+    return std::make_unique<divide>(left ? left->clone() : nullptr,
+                                    right ? right->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &var) const override;
   std::unique_ptr<expr> simplify() const override;
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
-    return std::make_unique<divide>(left->substitute(v, r),
-                                    right->substitute(v, r));
+    return std::make_unique<divide>(left ? left->substitute(v, r) : nullptr,
+                                    right ? right->substitute(v, r) : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
     return std::make_unique<divide>(left->expand(c), right->expand(c));
   }
   bool equals(const expr &other) const override {
     auto o = dynamic_cast<const divide *>(&other);
-    return o && left->equals(*o->left) && right->equals(*o->right);
+    if (!o)
+      return false;
+    bool l_eq =
+        (!left && !o->left) || (left && o->left && left->equals(*o->left));
+    bool r_eq = (!right && !o->right) ||
+                (right && o->right && right->equals(*o->right));
+    return l_eq && r_eq;
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (left)
+      left->collect_variables(vars);
+    if (right)
+      right->collect_variables(vars);
   }
 };
 
@@ -297,27 +361,45 @@ struct pow_node : expr {
   pow_node(std::unique_ptr<expr> b, std::unique_ptr<expr> e)
       : base(std::move(b)), exponent(std::move(e)) {}
   double eval(context &ctx) const override {
+    if (!base || !exponent)
+      return 0.0;
     return std::pow(base->eval(ctx), exponent->eval(ctx));
   }
   std::string to_string() const override {
-    return "{" + base->to_string() + "}^{" + exponent->to_string() + "}";
+    return "{" + (base ? base->to_string() : "?") + "}^{" +
+           (exponent ? exponent->to_string() : "?") + "}";
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<pow_node>(base->clone(), exponent->clone());
+    return std::make_unique<pow_node>(base ? base->clone() : nullptr,
+                                      exponent ? exponent->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &var) const override;
   std::unique_ptr<expr> simplify() const override;
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
-    return std::make_unique<pow_node>(base->substitute(v, r),
-                                      exponent->substitute(v, r));
+    return std::make_unique<pow_node>(base ? base->substitute(v, r) : nullptr,
+                                      exponent ? exponent->substitute(v, r)
+                                               : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    return std::make_unique<pow_node>(base->expand(c), exponent->expand(c));
+    return std::make_unique<pow_node>(base ? base->expand(c) : nullptr,
+                                      exponent ? exponent->expand(c) : nullptr);
   }
   bool equals(const expr &other) const override {
     auto o = dynamic_cast<const pow_node *>(&other);
-    return o && base->equals(*o->base) && exponent->equals(*o->exponent);
+    if (!o)
+      return false;
+    bool b_eq =
+        (!base && !o->base) || (base && o->base && base->equals(*o->base));
+    bool e_eq = (!exponent && !o->exponent) ||
+                (exponent && o->exponent && exponent->equals(*o->exponent));
+    return b_eq && e_eq;
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (base)
+      base->collect_variables(vars);
+    if (exponent)
+      exponent->collect_variables(vars);
   }
 };
 
@@ -332,7 +414,9 @@ struct func_call : expr {
 
   double eval(context &ctx) const override {
     if (ctx.builtins.count(name)) {
-      double val = args.empty() ? 0.0 : args[0]->eval(ctx);
+      if (args.empty() || !args[0])
+        return 0.0;
+      double val = args[0]->eval(ctx);
       return ctx.builtins[name](val);
     }
     // substitute args into body and eval
@@ -342,7 +426,8 @@ struct func_call : expr {
         return 0.0;
       auto expanded = uf.body->clone();
       for (size_t i = 0; i < args.size(); ++i) {
-        expanded = expanded->substitute(uf.params[i], *args[i]);
+        if (args[i])
+          expanded = expanded->substitute(uf.params[i], *args[i]);
       }
       return expanded->eval(ctx);
     }
@@ -350,11 +435,11 @@ struct func_call : expr {
   }
   std::string to_string() const override {
     if (args.size() == 1) {
-      return "\\" + name + "{" + args[0]->to_string() + "}";
+      return "\\" + name + "{" + (args[0] ? args[0]->to_string() : "?") + "}";
     }
     std::string res = "\\" + name + "\\left(";
     for (size_t i = 0; i < args.size(); ++i) {
-      res += args[i]->to_string();
+      res += (args[i] ? args[i]->to_string() : "?");
       if (i < args.size() - 1)
         res += ", ";
     }
@@ -364,7 +449,7 @@ struct func_call : expr {
   std::unique_ptr<expr> clone() const override {
     std::vector<std::unique_ptr<expr>> cloned_args;
     for (auto &a : args)
-      cloned_args.push_back(a->clone());
+      cloned_args.push_back(a ? a->clone() : nullptr);
     return std::make_unique<func_call>(name, std::move(cloned_args));
   }
   std::unique_ptr<expr> derivative(const std::string &var) const override;
@@ -373,7 +458,7 @@ struct func_call : expr {
                                    const expr &r) const override {
     std::vector<std::unique_ptr<expr>> sub_args;
     for (auto &a : args)
-      sub_args.push_back(a->substitute(v, r));
+      sub_args.push_back(a ? a->substitute(v, r) : nullptr);
     return std::make_unique<func_call>(name, std::move(sub_args));
   }
   std::unique_ptr<expr> expand(const context &c) const override {
@@ -383,15 +468,17 @@ struct func_call : expr {
       if (args.size() == uf.params.size()) {
         auto body = uf.body->clone();
         for (size_t i = 0; i < args.size(); ++i) {
-          auto exp_arg = args[i]->expand(c);
-          body = body->substitute(uf.params[i], *exp_arg);
+          if (args[i]) {
+            auto exp_arg = args[i]->expand(c);
+            body = body->substitute(uf.params[i], *exp_arg);
+          }
         }
         return body->expand(c);
       }
     }
     std::vector<std::unique_ptr<expr>> exp_args;
     for (auto &a : args)
-      exp_args.push_back(a->expand(c));
+      exp_args.push_back(a ? a->expand(c) : nullptr);
     return std::make_unique<func_call>(name, std::move(exp_args));
   }
   bool equals(const expr &other) const override {
@@ -399,10 +486,17 @@ struct func_call : expr {
     if (!o || name != o->name || args.size() != o->args.size())
       return false;
     for (size_t i = 0; i < args.size(); ++i) {
-      if (!args[i]->equals(*o->args[i]))
+      if ((!args[i] && o->args[i]) || (args[i] && !o->args[i]))
+        return false;
+      if (args[i] && o->args[i] && !args[i]->equals(*o->args[i]))
         return false;
     }
     return true;
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    for (const auto &a : args)
+      if (a)
+        a->collect_variables(vars);
   }
 };
 
@@ -411,12 +505,33 @@ struct deriv_node : expr {
   std::unique_ptr<expr> arg;
   deriv_node(std::string v, std::unique_ptr<expr> a)
       : var(v), arg(std::move(a)) {}
-  double eval(context &) const override { return 0.0; }
+  double eval(context &ctx) const override {
+    if (!arg)
+      return 0.0;
+    // Numerical differentiation: (f(x+h) - f(x-h)) / (2h)
+    const double h = 1e-7;
+    double original_val = 0.0;
+    bool had_var = ctx.vars.count(var);
+    if (had_var)
+      original_val = ctx.vars[var];
+
+    ctx.vars[var] = original_val + h;
+    double f_plus = arg->eval(ctx);
+    ctx.vars[var] = original_val - h;
+    double f_minus = arg->eval(ctx);
+
+    if (had_var)
+      ctx.vars[var] = original_val;
+    else
+      ctx.vars.erase(var);
+
+    return (f_plus - f_minus) / (2.0 * h);
+  }
   std::string to_string() const override {
-    return "\\frac{d}{d" + var + "}" + arg->to_string();
+    return "\\frac{d}{d" + var + "}" + (arg ? arg->to_string() : "?");
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<deriv_node>(var, arg->clone());
+    return std::make_unique<deriv_node>(var, arg ? arg->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &v) const override {
     return std::make_unique<deriv_node>(v, clone());
@@ -424,14 +539,21 @@ struct deriv_node : expr {
   std::unique_ptr<expr> simplify() const override;
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
-    return std::make_unique<deriv_node>(var, arg->substitute(v, r));
+    return std::make_unique<deriv_node>(var,
+                                        arg ? arg->substitute(v, r) : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    return std::make_unique<deriv_node>(var, arg->expand(c));
+    return std::make_unique<deriv_node>(var, arg ? arg->expand(c) : nullptr);
   }
   bool equals(const expr &other) const override {
     auto o = dynamic_cast<const deriv_node *>(&other);
-    return o && var == o->var && arg->equals(*o->arg);
+    if (!o || var != o->var)
+      return false;
+    return (!arg && !o->arg) || (arg && o->arg && arg->equals(*o->arg));
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (arg)
+      arg->collect_variables(vars);
   }
 };
 
@@ -473,38 +595,44 @@ struct integral : expr {
     std::string res = "\\int";
     if (lower && upper) {
       res += "_{" + lower->to_string() + "}^{" + upper->to_string() + "}";
+    } else if (lower) {
+      res += "_{" + lower->to_string() + "}";
+    } else if (upper) {
+      res += "^{" + upper->to_string() + "}";
     }
-    res += " " + integrand->to_string() + " d" + var;
+    res += " " + (integrand ? integrand->to_string() : "?") + " d" + var;
     return res;
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<integral>(lower ? lower->clone() : nullptr,
-                                      upper ? upper->clone() : nullptr,
-                                      integrand->clone(), var);
+    return std::make_unique<integral>(
+        lower ? lower->clone() : nullptr, upper ? upper->clone() : nullptr,
+        integrand ? integrand->clone() : nullptr, var);
   }
   std::unique_ptr<expr> derivative(const std::string &d_var) const override {
     // Leibniz rule: d/dx \int_{a}^{b} f(t,x) dt = f(b,x)b' - f(a,x)a' + \int
     // (df/dx) dt
     std::unique_ptr<expr> term1 = nullptr;
-    if (upper) {
+    if (upper && integrand) {
       auto f_at_b = integrand->substitute(var, *upper);
-      term1 = std::make_unique<multiply>(std::move(f_at_b),
-                                         upper->derivative(d_var));
+      auto b_deriv = upper->derivative(d_var);
+      term1 = std::make_unique<multiply>(std::move(f_at_b), std::move(b_deriv));
     }
 
     std::unique_ptr<expr> term2 = nullptr;
-    if (lower) {
+    if (lower && integrand) {
       auto f_at_a = integrand->substitute(var, *lower);
-      term2 = std::make_unique<multiply>(std::move(f_at_a),
-                                         lower->derivative(d_var));
+      auto a_deriv = lower->derivative(d_var);
+      term2 = std::make_unique<multiply>(std::move(f_at_a), std::move(a_deriv));
     }
 
-    auto di = integrand->derivative(d_var);
     std::unique_ptr<expr> term3 = nullptr;
-    if (!di->is_zero()) {
-      term3 = std::make_unique<integral>(lower ? lower->clone() : nullptr,
-                                         upper ? upper->clone() : nullptr,
-                                         std::move(di), var);
+    if (integrand) {
+      auto di = integrand->derivative(d_var);
+      if (!di->is_zero()) {
+        term3 = std::make_unique<integral>(lower ? lower->clone() : nullptr,
+                                           upper ? upper->clone() : nullptr,
+                                           std::move(di), var);
+      }
     }
 
     std::unique_ptr<expr> res = nullptr;
@@ -557,21 +685,32 @@ struct integral : expr {
                 (upper && o->upper && upper->equals(*o->upper));
     return l_eq && u_eq;
   }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (lower)
+      lower->collect_variables(vars);
+    if (upper)
+      upper->collect_variables(vars);
+    if (integrand)
+      integrand->collect_variables(vars);
+  }
 };
 
 // node implementations
 
 inline std::unique_ptr<expr> add::derivative(const std::string &var) const {
-  return std::make_unique<add>(left->derivative(var), right->derivative(var));
+  return std::make_unique<add>(left ? left->derivative(var) : nullptr,
+                               right ? right->derivative(var) : nullptr);
 }
 
 inline std::unique_ptr<expr> add::simplify() const {
   std::vector<std::unique_ptr<expr>> terms;
   auto collect = [&](auto self, const expr &e) -> void {
     if (auto a = dynamic_cast<const add *>(&e)) {
-      self(self, *a->left);
-      self(self, *a->right);
-    } else {
+      if (a->left)
+        self(self, *a->left);
+      if (a->right)
+        self(self, *a->right);
+    } else if (e.simplify()) {
       terms.push_back(e.simplify());
     }
   };
@@ -603,7 +742,7 @@ inline std::unique_ptr<expr> add::simplify() const {
     std::unique_ptr<expr> s;
     if (auto m = dynamic_cast<const multiply *>(t.get())) {
       if (m->left->is_number()) {
-        c = static_cast<number *>(m->left.get())->val;
+        c = *m->left->get_number();
         s = m->right->clone();
       } else {
         s = t->clone();
@@ -683,9 +822,21 @@ inline std::unique_ptr<expr> add::simplify() const {
 
 inline std::unique_ptr<expr>
 multiply::derivative(const std::string &var) const {
-  return std::make_unique<add>(
-      std::make_unique<multiply>(left->derivative(var), right->clone()),
-      std::make_unique<multiply>(left->clone(), right->derivative(var)));
+  std::unique_ptr<expr> t1 =
+      (left && right)
+          ? std::make_unique<multiply>(left->derivative(var), right->clone())
+          : nullptr;
+  std::unique_ptr<expr> t2 =
+      (left && right)
+          ? std::make_unique<multiply>(left->clone(), right->derivative(var))
+          : nullptr;
+  if (!t1 && !t2)
+    return nullptr;
+  if (!t1)
+    return t2;
+  if (!t2)
+    return t1;
+  return std::make_unique<add>(std::move(t1), std::move(t2));
 }
 
 inline std::unique_ptr<expr> multiply::simplify() const {
@@ -704,10 +855,9 @@ inline std::unique_ptr<expr> multiply::simplify() const {
 
   // constant folding for nested multiplications
   if (l->is_number()) {
-    double val = static_cast<number *>(l.get())->val;
+    double val = *l->get_number();
     if (r->is_number())
-      return std::make_unique<number>(val *
-                                      static_cast<number *>(r.get())->val);
+      return std::make_unique<number>(val * *r->get_number());
 
     // Distribute -1.0 over addition: -1 * (A + B) -> (-1 * A) + (-1 * B)
     if (std::abs(val + 1.0) < 1e-9) {
@@ -724,7 +874,7 @@ inline std::unique_ptr<expr> multiply::simplify() const {
     // flatten nested multiplications
     if (auto rm = dynamic_cast<multiply *>(r.get())) {
       if (rm->left->is_number()) {
-        double new_val = val * static_cast<number *>(rm->left.get())->val;
+        double new_val = val * *rm->left->get_number();
         return std::make_unique<multiply>(std::make_unique<number>(new_val),
                                           rm->right->simplify())
             ->simplify();
@@ -794,6 +944,8 @@ inline std::unique_ptr<expr> multiply::simplify() const {
 }
 
 inline std::unique_ptr<expr> divide::derivative(const std::string &var) const {
+  if (!left || !right)
+    return nullptr;
   auto num = std::make_unique<add>(
       std::make_unique<multiply>(left->derivative(var), right->clone()),
       std::make_unique<multiply>(
@@ -851,6 +1003,8 @@ inline std::unique_ptr<expr> divide::simplify() const {
 
 inline std::unique_ptr<expr>
 pow_node::derivative(const std::string &var) const {
+  if (!base || !exponent)
+    return nullptr;
   // d/dx(f^g) = f^g * (g' * ln(f) + g * f' / f)
   auto f = base->clone();
   auto g = exponent->clone();
@@ -879,8 +1033,7 @@ inline std::unique_ptr<expr> pow_node::simplify() const {
     return b;
   if (b->is_number() && e->is_number())
     return std::make_unique<number>(
-        std::pow(static_cast<number *>(b.get())->val,
-                 static_cast<number *>(e.get())->val));
+        std::pow(*b->get_number(), *e->get_number()));
   return std::make_unique<pow_node>(std::move(b), std::move(e));
 }
 
@@ -892,6 +1045,8 @@ func_call::derivative(const std::string &var) const {
   std::vector<std::unique_ptr<expr>> partial_terms;
 
   for (size_t i = 0; i < args.size(); ++i) {
+    if (!args[i])
+      continue; // Added nullptr check
     auto arg_deriv = args[i]->derivative(var);
     if (arg_deriv->is_zero())
       continue;
@@ -1036,10 +1191,14 @@ func_call::derivative(const std::string &var) const {
 
 inline std::unique_ptr<expr> func_call::simplify() const {
   std::vector<std::unique_ptr<expr>> s_args;
-  for (const auto &a : args)
-    s_args.push_back(a->simplify());
+  for (const auto &a : args) {
+    if (a)
+      s_args.push_back(a->simplify());
+    else
+      s_args.push_back(nullptr);
+  }
 
-  if (s_args.size() == 1) {
+  if (s_args.size() == 1 && s_args[0]) {
     auto &arg = s_args[0];
     if (name == "log" || name == "ln") {
       if (arg->is_one())
@@ -1084,18 +1243,40 @@ inline std::unique_ptr<expr> func_call::simplify() const {
       }
     }
 
-    if (arg->is_number()) {
-      double v = *arg->get_number();
+    if (s_args.size() == 1 && s_args[0]->is_number()) {
+      double v = *s_args[0]->get_number();
+      if (name == "log" || name == "ln") {
+        if (std::abs(v - M_E) < 1e-9)
+          return std::make_unique<number>(1.0);
+        if (std::abs(v - 1.0) < 1e-9)
+          return std::make_unique<number>(0.0);
+        return std::make_unique<number>(std::log(v));
+      }
+      if (name == "log10")
+        return std::make_unique<number>(std::log10(v));
+      if (name == "exp")
+        return std::make_unique<number>(std::exp(v));
+      if (name == "sqrt" && v >= 0)
+        return std::make_unique<number>(std::sqrt(v));
       if (name == "sin" && std::abs(v) < 1e-9)
         return std::make_unique<number>(0);
       if (name == "cos" && std::abs(v) < 1e-9)
         return std::make_unique<number>(1);
+    }
+    // Handle log(e) where e is a named_constant
+    if (s_args.size() == 1 && (name == "log" || name == "ln")) {
+      if (dynamic_cast<const named_constant *>(s_args[0].get())) {
+        if (static_cast<const named_constant *>(s_args[0].get())->name == "e")
+          return std::make_unique<number>(1.0);
+      }
     }
   }
   return std::make_unique<func_call>(name, std::move(s_args));
 }
 
 inline std::unique_ptr<expr> deriv_node::simplify() const {
+  if (!arg)
+    return std::make_unique<deriv_node>(var, nullptr);
   return arg->derivative(var)->simplify();
 }
 

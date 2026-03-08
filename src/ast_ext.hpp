@@ -1,4 +1,14 @@
 #pragma once
+#ifndef _USE_MATH_DEFINES
+#define _USE_MATH_DEFINES
+#endif
+#include <cmath>
+#ifndef M_E
+#define M_E 2.71828182845904523536
+#endif
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #include "ast.hpp"
 #include <cmath>
@@ -15,15 +25,41 @@ static inline const std::map<std::string, double> &builtin_constants() {
       {"phi", 1.6180339887498948482},
       {"tau", 2.0 * M_PI},
       {"inf", std::numeric_limits<double>::infinity()},
-  };
+      {"infty", std::numeric_limits<double>::infinity()},
+      {"alpha", 0.0},
+      {"beta", 0.0},
+      {"gamma", 0.0},
+      {"delta", 0.0},
+      {"theta", 0.0},
+      {"omega", 0.0},
+      {"zeta", 0.0},
+      {"eta", 0.0},
+      {"iota", 0.0},
+      {"kappa", 0.0},
+      {"lambda", 0.0},
+      {"mu", 0.0},
+      {"nu", 0.0},
+      {"xi", 0.0},
+      {"rho", 0.0},
+      {"sigma", 0.0},
+      {"tau_const", 0.0},
+      {"upsilon", 0.0},
+      {"chi", 0.0},
+      {"psi", 0.0}};
   return C;
 }
 
 static inline const std::map<std::string, std::string> &const_latex() {
   static const std::map<std::string, std::string> L = {
-      {"pi", "\\pi"},   {"e", "e"},         {"phi", "\\varphi"},
-      {"tau", "\\tau"}, {"inf", "\\infty"},
-  };
+      {"pi", "\\pi"},           {"e", "e"},           {"phi", "\\varphi"},
+      {"tau", "\\tau"},         {"inf", "\\infty"},   {"infty", "\\infty"},
+      {"alpha", "\\alpha"},     {"beta", "\\beta"},   {"gamma", "\\gamma"},
+      {"delta", "\\delta"},     {"theta", "\\theta"}, {"omega", "\\omega"},
+      {"epsilon", "\\epsilon"}, {"zeta", "\\zeta"},   {"eta", "\\eta"},
+      {"iota", "\\iota"},       {"kappa", "\\kappa"}, {"lambda", "\\lambda"},
+      {"mu", "\\mu"},           {"nu", "\\nu"},       {"xi", "\\xi"},
+      {"rho", "\\rho"},         {"sigma", "\\sigma"}, {"tau_const", "\\tau"},
+      {"upsilon", "\\upsilon"}, {"chi", "\\chi"},     {"psi", "\\psi"}};
   return L;
 }
 
@@ -35,9 +71,12 @@ struct gcd_node : expr {
       : left(std::move(l)), right(std::move(r)) {}
 
   double eval(context &ctx) const override {
-    long long a = static_cast<long long>(std::abs(std::round(left->eval(ctx))));
-    long long b =
-        static_cast<long long>(std::abs(std::round(right->eval(ctx))));
+    if (!left || !right)
+      return 0.0;
+    double l_val = left->eval(ctx);
+    double r_val = right->eval(ctx);
+    long long a = static_cast<long long>(std::abs(std::round(l_val)));
+    long long b = static_cast<long long>(std::abs(std::round(r_val)));
     while (b) {
       long long t = b;
       b = a % b;
@@ -46,19 +85,20 @@ struct gcd_node : expr {
     return static_cast<double>(a);
   }
   std::string to_string() const override {
-    return "\\gcd\\left(" + left->to_string() + ", " + right->to_string() +
-           "\\right)";
+    return "\\gcd\\left(" + (left ? left->to_string() : "?") + ", " +
+           (right ? right->to_string() : "?") + "\\right)";
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<gcd_node>(left->clone(), right->clone());
+    return std::make_unique<gcd_node>(left ? left->clone() : nullptr,
+                                      right ? right->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &) const override {
     return std::make_unique<number>(0);
   }
   std::unique_ptr<expr> simplify() const override {
-    auto sl = left->simplify();
-    auto sr = right->simplify();
-    if (sl->is_number() && sr->is_number()) {
+    auto sl = left ? left->simplify() : nullptr;
+    auto sr = right ? right->simplify() : nullptr;
+    if (sl && sr && sl->is_number() && sr->is_number()) {
       context c;
       gcd_node tmp(sl->clone(), sr->clone());
       return std::make_unique<number>(tmp.eval(c));
@@ -67,15 +107,29 @@ struct gcd_node : expr {
   }
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
-    return std::make_unique<gcd_node>(left->substitute(v, r),
-                                      right->substitute(v, r));
+    return std::make_unique<gcd_node>(left ? left->substitute(v, r) : nullptr,
+                                      right ? right->substitute(v, r)
+                                            : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    return std::make_unique<gcd_node>(left->expand(c), right->expand(c));
+    return std::make_unique<gcd_node>(left ? left->expand(c) : nullptr,
+                                      right ? right->expand(c) : nullptr);
   }
   bool equals(const expr &o) const override {
     auto p = dynamic_cast<const gcd_node *>(&o);
-    return p && left->equals(*p->left) && right->equals(*p->right);
+    if (!p)
+      return false;
+    bool l_eq =
+        (!left && !p->left) || (left && p->left && left->equals(*p->left));
+    bool r_eq = (!right && !p->right) ||
+                (right && p->right && right->equals(*p->right));
+    return l_eq && r_eq;
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (left)
+      left->collect_variables(vars);
+    if (right)
+      right->collect_variables(vars);
   }
 };
 
@@ -87,9 +141,12 @@ struct lcm_node : expr {
       : left(std::move(l)), right(std::move(r)) {}
 
   double eval(context &ctx) const override {
-    long long a = static_cast<long long>(std::abs(std::round(left->eval(ctx))));
-    long long b =
-        static_cast<long long>(std::abs(std::round(right->eval(ctx))));
+    if (!left || !right)
+      return 0.0;
+    double l_val = left->eval(ctx);
+    double r_val = right->eval(ctx);
+    long long a = static_cast<long long>(std::abs(std::round(l_val)));
+    long long b = static_cast<long long>(std::abs(std::round(r_val)));
     if (a == 0 || b == 0)
       return 0;
     long long ta = a, tb = b;
@@ -101,19 +158,20 @@ struct lcm_node : expr {
     return static_cast<double>((a / ta) * b);
   }
   std::string to_string() const override {
-    return "\\text{lcm}\\left(" + left->to_string() + ", " +
-           right->to_string() + "\\right)";
+    return "\\text{lcm}\\left(" + (left ? left->to_string() : "?") + ", " +
+           (right ? right->to_string() : "?") + "\\right)";
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<lcm_node>(left->clone(), right->clone());
+    return std::make_unique<lcm_node>(left ? left->clone() : nullptr,
+                                      right ? right->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &) const override {
     return std::make_unique<number>(0);
   }
   std::unique_ptr<expr> simplify() const override {
-    auto sl = left->simplify();
-    auto sr = right->simplify();
-    if (sl->is_number() && sr->is_number()) {
+    auto sl = left ? left->simplify() : nullptr;
+    auto sr = right ? right->simplify() : nullptr;
+    if (sl && sr && sl->is_number() && sr->is_number()) {
       context c;
       lcm_node tmp(sl->clone(), sr->clone());
       return std::make_unique<number>(tmp.eval(c));
@@ -122,15 +180,29 @@ struct lcm_node : expr {
   }
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
-    return std::make_unique<lcm_node>(left->substitute(v, r),
-                                      right->substitute(v, r));
+    return std::make_unique<lcm_node>(left ? left->substitute(v, r) : nullptr,
+                                      right ? right->substitute(v, r)
+                                            : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    return std::make_unique<lcm_node>(left->expand(c), right->expand(c));
+    return std::make_unique<lcm_node>(left ? left->expand(c) : nullptr,
+                                      right ? right->expand(c) : nullptr);
   }
   bool equals(const expr &o) const override {
     auto p = dynamic_cast<const lcm_node *>(&o);
-    return p && left->equals(*p->left) && right->equals(*p->right);
+    if (!p)
+      return false;
+    bool l_eq =
+        (!left && !p->left) || (left && p->left && left->equals(*p->left));
+    bool r_eq = (!right && !p->right) ||
+                (right && p->right && right->equals(*p->right));
+    return l_eq && r_eq;
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (left)
+      left->collect_variables(vars);
+    if (right)
+      right->collect_variables(vars);
   }
 };
 
@@ -152,20 +224,25 @@ struct factorial_node : expr {
   explicit factorial_node(std::unique_ptr<expr> a) : arg(std::move(a)) {}
 
   double eval(context &ctx) const override {
+    if (!arg)
+      return 0.0;
     return fact_dbl(static_cast<int>(std::round(arg->eval(ctx))));
   }
-  std::string to_string() const override { return arg->to_string() + "!"; }
+  std::string to_string() const override {
+    return (arg ? arg->to_string() : "?") + "!";
+  }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<factorial_node>(arg->clone());
+    return std::make_unique<factorial_node>(arg ? arg->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &) const override {
     return std::make_unique<number>(0);
   }
   std::unique_ptr<expr> simplify() const override {
-    auto sa = arg->simplify();
-    if (sa->is_number()) {
-      int n =
-          static_cast<int>(std::round(static_cast<number *>(sa.get())->val));
+    if (!arg)
+      return std::make_unique<factorial_node>(nullptr);
+    auto sa = arg ? arg->simplify() : nullptr;
+    if (sa && sa->is_number()) {
+      int n = static_cast<int>(std::round(*sa->get_number()));
       if (n >= 0 && n <= 170)
         return std::make_unique<number>(fact_dbl(n));
     }
@@ -173,14 +250,21 @@ struct factorial_node : expr {
   }
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
-    return std::make_unique<factorial_node>(arg->substitute(v, r));
+    return std::make_unique<factorial_node>(arg ? arg->substitute(v, r)
+                                                : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    return std::make_unique<factorial_node>(arg->expand(c));
+    return std::make_unique<factorial_node>(arg ? arg->expand(c) : nullptr);
   }
   bool equals(const expr &o) const override {
     auto p = dynamic_cast<const factorial_node *>(&o);
-    return p && arg->equals(*p->arg);
+    if (!p)
+      return false;
+    return (!arg && !p->arg) || (arg && p->arg && arg->equals(*p->arg));
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (arg)
+      arg->collect_variables(vars);
   }
 };
 
@@ -192,6 +276,8 @@ struct combination_node : expr {
       : n_expr(std::move(n)), r_expr(std::move(r)) {}
 
   double eval(context &ctx) const override {
+    if (!n_expr || !r_expr)
+      return 0.0;
     int n = static_cast<int>(std::round(n_expr->eval(ctx)));
     int r = static_cast<int>(std::round(r_expr->eval(ctx)));
     if (r < 0 || r > n)
@@ -202,17 +288,20 @@ struct combination_node : expr {
     return std::round(result);
   }
   std::string to_string() const override {
-    return "\\dbinom{" + n_expr->to_string() + "}{" + r_expr->to_string() + "}";
+    return "\\dbinom{" + (n_expr ? n_expr->to_string() : "?") + "}{" +
+           (r_expr ? r_expr->to_string() : "?") + "}";
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<combination_node>(n_expr->clone(), r_expr->clone());
+    return std::make_unique<combination_node>(
+        n_expr ? n_expr->clone() : nullptr, r_expr ? r_expr->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &) const override {
     return std::make_unique<number>(0);
   }
   std::unique_ptr<expr> simplify() const override {
-    auto sn = n_expr->simplify(), sr = r_expr->simplify();
-    if (sn->is_number() && sr->is_number()) {
+    auto sn = n_expr ? n_expr->simplify() : nullptr;
+    auto sr = r_expr ? r_expr->simplify() : nullptr;
+    if (sn && sr && sn->is_number() && sr->is_number()) {
       context c;
       combination_node tmp(sn->clone(), sr->clone());
       return std::make_unique<number>(tmp.eval(c));
@@ -232,6 +321,12 @@ struct combination_node : expr {
     auto p = dynamic_cast<const combination_node *>(&o);
     return p && n_expr->equals(*p->n_expr) && r_expr->equals(*p->r_expr);
   }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (n_expr)
+      n_expr->collect_variables(vars);
+    if (r_expr)
+      r_expr->collect_variables(vars);
+  }
 };
 
 // permutation
@@ -242,6 +337,8 @@ struct permutation_node : expr {
       : n_expr(std::move(n)), r_expr(std::move(r)) {}
 
   double eval(context &ctx) const override {
+    if (!n_expr || !r_expr)
+      return 0.0;
     int n = static_cast<int>(std::round(n_expr->eval(ctx)));
     int r = static_cast<int>(std::round(r_expr->eval(ctx)));
     if (r < 0 || r > n)
@@ -252,17 +349,20 @@ struct permutation_node : expr {
     return result;
   }
   std::string to_string() const override {
-    return "{}^{" + n_expr->to_string() + "}P_{" + r_expr->to_string() + "}";
+    return "{}^{" + (n_expr ? n_expr->to_string() : "?") + "}P_{" +
+           (r_expr ? r_expr->to_string() : "?") + "}";
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<permutation_node>(n_expr->clone(), r_expr->clone());
+    return std::make_unique<permutation_node>(
+        n_expr ? n_expr->clone() : nullptr, r_expr ? r_expr->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &) const override {
     return std::make_unique<number>(0);
   }
   std::unique_ptr<expr> simplify() const override {
-    auto sn = n_expr->simplify(), sr = r_expr->simplify();
-    if (sn->is_number() && sr->is_number()) {
+    auto sn = n_expr ? n_expr->simplify() : nullptr;
+    auto sr = r_expr ? r_expr->simplify() : nullptr;
+    if (sn && sr && sn->is_number() && sr->is_number()) {
       context c;
       permutation_node tmp(sn->clone(), sr->clone());
       return std::make_unique<number>(tmp.eval(c));
@@ -271,16 +371,30 @@ struct permutation_node : expr {
   }
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
-    return std::make_unique<permutation_node>(n_expr->substitute(v, r),
-                                              r_expr->substitute(v, r));
+    return std::make_unique<permutation_node>(
+        n_expr ? n_expr->substitute(v, r) : nullptr,
+        r_expr ? r_expr->substitute(v, r) : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    return std::make_unique<permutation_node>(n_expr->expand(c),
-                                              r_expr->expand(c));
+    return std::make_unique<permutation_node>(
+        n_expr ? n_expr->expand(c) : nullptr,
+        r_expr ? r_expr->expand(c) : nullptr);
   }
   bool equals(const expr &o) const override {
     auto p = dynamic_cast<const permutation_node *>(&o);
-    return p && n_expr->equals(*p->n_expr) && r_expr->equals(*p->r_expr);
+    if (!p)
+      return false;
+    bool n_eq = (!n_expr && !p->n_expr) ||
+                (n_expr && p->n_expr && n_expr->equals(*p->n_expr));
+    bool r_eq = (!r_expr && !p->r_expr) ||
+                (r_expr && p->r_expr && r_expr->equals(*p->r_expr));
+    return n_eq && r_eq;
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (n_expr)
+      n_expr->collect_variables(vars);
+    if (r_expr)
+      r_expr->collect_variables(vars);
   }
 };
 
@@ -296,6 +410,8 @@ struct sum_node : expr {
         body(std::move(b)) {}
 
   double eval(context &ctx) const override {
+    if (!from || !to_expr || !body)
+      return 0.0;
     int fr = static_cast<int>(std::round(from->eval(ctx)));
     int to = static_cast<int>(std::round(to_expr->eval(ctx)));
     double saved = ctx.vars.count(index_var) ? ctx.vars.at(index_var) : 0.0;
@@ -308,12 +424,14 @@ struct sum_node : expr {
     return sum;
   }
   std::string to_string() const override {
-    return "\\sum_{" + index_var + "=" + from->to_string() + "}^{" +
-           to_expr->to_string() + "} " + body->to_string();
+    return "\\sum_{" + index_var + "=" + (from ? from->to_string() : "?") +
+           "}^{" + (to_expr ? to_expr->to_string() : "?") + "} " +
+           (body ? body->to_string() : "?");
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<sum_node>(index_var, from->clone(),
-                                      to_expr->clone(), body->clone());
+    return std::make_unique<sum_node>(index_var, from ? from->clone() : nullptr,
+                                      to_expr ? to_expr->clone() : nullptr,
+                                      body ? body->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &var) const override {
     if (var == index_var)
@@ -322,25 +440,45 @@ struct sum_node : expr {
                                       to_expr->clone(), body->derivative(var));
   }
   std::unique_ptr<expr> simplify() const override {
-    return std::make_unique<sum_node>(index_var, from->simplify(),
-                                      to_expr->simplify(), body->simplify());
+    return std::make_unique<sum_node>(index_var,
+                                      from ? from->simplify() : nullptr,
+                                      to_expr ? to_expr->simplify() : nullptr,
+                                      body ? body->simplify() : nullptr);
   }
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
     if (v == index_var)
       return clone();
-    return std::make_unique<sum_node>(index_var, from->substitute(v, r),
-                                      to_expr->substitute(v, r),
-                                      body->substitute(v, r));
+    return std::make_unique<sum_node>(
+        index_var, from ? from->substitute(v, r) : nullptr,
+        to_expr ? to_expr->substitute(v, r) : nullptr,
+        body ? body->substitute(v, r) : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    return std::make_unique<sum_node>(index_var, from->expand(c),
-                                      to_expr->expand(c), body->expand(c));
+    return std::make_unique<sum_node>(index_var,
+                                      from ? from->expand(c) : nullptr,
+                                      to_expr ? to_expr->expand(c) : nullptr,
+                                      body ? body->expand(c) : nullptr);
   }
   bool equals(const expr &o) const override {
     auto p = dynamic_cast<const sum_node *>(&o);
-    return p && index_var == p->index_var && from->equals(*p->from) &&
-           to_expr->equals(*p->to_expr) && body->equals(*p->body);
+    if (!p || index_var != p->index_var)
+      return false;
+    bool f_eq =
+        (!from && !p->from) || (from && p->from && from->equals(*p->from));
+    bool t_eq = (!to_expr && !p->to_expr) ||
+                (to_expr && p->to_expr && to_expr->equals(*p->to_expr));
+    bool b_eq =
+        (!body && !p->body) || (body && p->body && body->equals(*p->body));
+    return f_eq && t_eq && b_eq;
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (from)
+      from->collect_variables(vars);
+    if (to_expr)
+      to_expr->collect_variables(vars);
+    if (body)
+      body->collect_variables(vars);
   }
 };
 
@@ -356,6 +494,8 @@ struct product_node : expr {
         body(std::move(b)) {}
 
   double eval(context &ctx) const override {
+    if (!from || !to_expr || !body)
+      return 1.0;
     int fr = static_cast<int>(std::round(from->eval(ctx)));
     int to = static_cast<int>(std::round(to_expr->eval(ctx)));
     double saved = ctx.vars.count(index_var) ? ctx.vars.at(index_var) : 1.0;
@@ -368,36 +508,58 @@ struct product_node : expr {
     return prod;
   }
   std::string to_string() const override {
-    return "\\prod_{" + index_var + "=" + from->to_string() + "}^{" +
-           to_expr->to_string() + "} " + body->to_string();
+    return "\\prod_{" + index_var + "=" + (from ? from->to_string() : "?") +
+           "}^{" + (to_expr ? to_expr->to_string() : "?") + "} " +
+           (body ? body->to_string() : "?");
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<product_node>(index_var, from->clone(),
-                                          to_expr->clone(), body->clone());
+    return std::make_unique<product_node>(
+        index_var, from ? from->clone() : nullptr,
+        to_expr ? to_expr->clone() : nullptr, body ? body->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &) const override {
     return std::make_unique<number>(0);
   }
   std::unique_ptr<expr> simplify() const override {
     return std::make_unique<product_node>(
-        index_var, from->simplify(), to_expr->simplify(), body->simplify());
+        index_var, from ? from->simplify() : nullptr,
+        to_expr ? to_expr->simplify() : nullptr,
+        body ? body->simplify() : nullptr);
   }
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
     if (v == index_var)
       return clone();
-    return std::make_unique<product_node>(index_var, from->substitute(v, r),
-                                          to_expr->substitute(v, r),
-                                          body->substitute(v, r));
+    return std::make_unique<product_node>(
+        index_var, from ? from->substitute(v, r) : nullptr,
+        to_expr ? to_expr->substitute(v, r) : nullptr,
+        body ? body->substitute(v, r) : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    return std::make_unique<product_node>(index_var, from->expand(c),
-                                          to_expr->expand(c), body->expand(c));
+    return std::make_unique<product_node>(
+        index_var, from ? from->expand(c) : nullptr,
+        to_expr ? to_expr->expand(c) : nullptr,
+        body ? body->expand(c) : nullptr);
   }
   bool equals(const expr &o) const override {
     auto p = dynamic_cast<const product_node *>(&o);
-    return p && index_var == p->index_var && from->equals(*p->from) &&
-           to_expr->equals(*p->to_expr) && body->equals(*p->body);
+    if (!p || index_var != p->index_var)
+      return false;
+    bool f_eq =
+        (!from && !p->from) || (from && p->from && from->equals(*p->from));
+    bool t_eq = (!to_expr && !p->to_expr) ||
+                (to_expr && p->to_expr && to_expr->equals(*p->to_expr));
+    bool b_eq =
+        (!body && !p->body) || (body && p->body && body->equals(*p->body));
+    return f_eq && t_eq && b_eq;
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (from)
+      from->collect_variables(vars);
+    if (to_expr)
+      to_expr->collect_variables(vars);
+    if (body)
+      body->collect_variables(vars);
   }
 };
 
@@ -407,14 +569,20 @@ struct abs_node : expr {
   std::unique_ptr<expr> arg;
   explicit abs_node(std::unique_ptr<expr> a) : arg(std::move(a)) {}
 
-  double eval(context &ctx) const override { return std::abs(arg->eval(ctx)); }
+  double eval(context &ctx) const override {
+    if (!arg)
+      return 0.0;
+    return std::abs(arg->eval(ctx));
+  }
   std::string to_string() const override {
-    return "\\left|" + arg->to_string() + "\\right|";
+    return "\\left|" + (arg ? arg->to_string() : "?") + "\\right|";
   }
   std::unique_ptr<expr> clone() const override {
-    return std::make_unique<abs_node>(arg->clone());
+    return std::make_unique<abs_node>(arg ? arg->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &var) const override {
+    if (!arg)
+      return std::make_unique<number>(0);
     // d/dx |u| = (u / |u|) * u'
     return std::make_unique<multiply>(
         std::make_unique<divide>(arg->clone(),
@@ -422,21 +590,86 @@ struct abs_node : expr {
         arg->derivative(var));
   }
   std::unique_ptr<expr> simplify() const override {
+    if (!arg)
+      return std::make_unique<abs_node>(nullptr);
     auto sa = arg->simplify();
-    if (sa->is_number())
-      return std::make_unique<number>(
-          std::abs(static_cast<number *>(sa.get())->val));
+    if (sa && sa->is_number())
+      return std::make_unique<number>(std::abs(*sa->get_number()));
     return std::make_unique<abs_node>(std::move(sa));
   }
   std::unique_ptr<expr> substitute(const std::string &v,
                                    const expr &r) const override {
-    return std::make_unique<abs_node>(arg->substitute(v, r));
+    return std::make_unique<abs_node>(arg ? arg->substitute(v, r) : nullptr);
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    return std::make_unique<abs_node>(arg->expand(c));
+    return std::make_unique<abs_node>(arg ? arg->expand(c) : nullptr);
   }
   bool equals(const expr &o) const override {
     auto p = dynamic_cast<const abs_node *>(&o);
-    return p && arg->equals(*p->arg);
+    if (!p)
+      return false;
+    return (!arg && !p->arg) || (arg && p->arg && arg->equals(*p->arg));
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (arg)
+      arg->collect_variables(vars);
+  }
+};
+
+// limit
+
+struct limit_node : expr {
+  std::string var;
+  std::unique_ptr<expr> to, body;
+
+  limit_node(std::string v, std::unique_ptr<expr> t, std::unique_ptr<expr> b)
+      : var(v), to(std::move(t)), body(std::move(b)) {}
+
+  double eval(context &ctx) const override {
+    if (!to || !body)
+      return 0.0;
+    auto val = to->eval(ctx);
+    auto sub = body->substitute(var, number(val));
+    return sub->eval(ctx);
+  }
+  std::string to_string() const override {
+    return "\\lim_{" + var + "\\to " + (to ? to->to_string() : "?") + "} " +
+           (body ? body->to_string() : "?");
+  }
+  std::unique_ptr<expr> clone() const override {
+    return std::make_unique<limit_node>(var, to ? to->clone() : nullptr,
+                                        body ? body->clone() : nullptr);
+  }
+  std::unique_ptr<expr> derivative(const std::string &v) const override {
+    return std::make_unique<limit_node>(var, to ? to->clone() : nullptr,
+                                        body ? body->derivative(v) : nullptr);
+  }
+  std::unique_ptr<expr> simplify() const override {
+    return std::make_unique<limit_node>(var, to ? to->simplify() : nullptr,
+                                        body ? body->simplify() : nullptr);
+  }
+  std::unique_ptr<expr> substitute(const std::string &v,
+                                   const expr &r) const override {
+    if (v == var)
+      return clone();
+    return std::make_unique<limit_node>(
+        var, to ? to->substitute(v, r) : nullptr,
+        body ? body->substitute(v, r) : nullptr);
+  }
+  std::unique_ptr<expr> expand(const context &c) const override {
+    return std::make_unique<limit_node>(var, to ? to->expand(c) : nullptr,
+                                        body ? body->expand(c) : nullptr);
+  }
+  bool equals(const expr &o) const override {
+    auto p = dynamic_cast<const limit_node *>(&o);
+    return p && var == p->var &&
+           ((!to && !p->to) || (to && p->to && to->equals(*p->to))) &&
+           ((!body && !p->body) || (body && p->body && body->equals(*p->body)));
+  }
+  void collect_variables(std::set<std::string> &vars) const override {
+    if (to)
+      to->collect_variables(vars);
+    if (body)
+      body->collect_variables(vars);
   }
 };

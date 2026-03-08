@@ -1,4 +1,14 @@
 #pragma once
+#ifndef _USE_MATH_DEFINES
+#define _USE_MATH_DEFINES
+#endif
+#include <cmath>
+#ifndef M_E
+#define M_E 2.71828182845904523536
+#endif
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #include "ast.hpp"
 #include "ast_ext.hpp"
@@ -57,18 +67,44 @@ public:
   // builtins
 
   void load_builtins() {
-    ctx.builtins["sin"] = [](double x) { return std::sin(x); };
-    ctx.builtins["cos"] = [](double x) { return std::cos(x); };
-    ctx.builtins["tan"] = [](double x) { return std::tan(x); };
-    ctx.builtins["cot"] = [](double x) { return 1.0 / std::tan(x); };
-    ctx.builtins["sec"] = [](double x) { return 1.0 / std::cos(x); };
-    ctx.builtins["csc"] = [](double x) { return 1.0 / std::sin(x); };
-    ctx.builtins["arcsin"] =
-        ctx.builtins["asin"] = [](double x) { return std::asin(x); };
-    ctx.builtins["arccos"] =
-        ctx.builtins["acos"] = [](double x) { return std::acos(x); };
-    ctx.builtins["arctan"] =
-        ctx.builtins["atan"] = [](double x) { return std::atan(x); };
+    auto deg_to_rad = [](double x) { return x * M_PI / 180.0; };
+    auto rad_to_deg = [](double x) { return x * 180.0 / M_PI; };
+
+    ctx.builtins["sin"] = [this, deg_to_rad](double x) {
+      return std::sin(ctx.use_radians ? x : deg_to_rad(x));
+    };
+    ctx.builtins["cos"] = [this, deg_to_rad](double x) {
+      return std::cos(ctx.use_radians ? x : deg_to_rad(x));
+    };
+    ctx.builtins["tan"] = [this, deg_to_rad](double x) {
+      return std::tan(ctx.use_radians ? x : deg_to_rad(x));
+    };
+    ctx.builtins["cot"] = [this, deg_to_rad](double x) {
+      return 1.0 / std::tan(ctx.use_radians ? x : deg_to_rad(x));
+    };
+    ctx.builtins["sec"] = [this, deg_to_rad](double x) {
+      return 1.0 / std::cos(ctx.use_radians ? x : deg_to_rad(x));
+    };
+    ctx.builtins["csc"] = [this, deg_to_rad](double x) {
+      return 1.0 / std::sin(ctx.use_radians ? x : deg_to_rad(x));
+    };
+
+    ctx.builtins["asin"] =
+        ctx.builtins["arcsin"] = [this, rad_to_deg](double x) {
+          double r = std::asin(x);
+          return ctx.use_radians ? r : rad_to_deg(r);
+        };
+    ctx.builtins["acos"] =
+        ctx.builtins["arccos"] = [this, rad_to_deg](double x) {
+          double r = std::acos(x);
+          return ctx.use_radians ? r : rad_to_deg(r);
+        };
+    ctx.builtins["atan"] =
+        ctx.builtins["arctan"] = [this, rad_to_deg](double x) {
+          double r = std::atan(x);
+          return ctx.use_radians ? r : rad_to_deg(r);
+        };
+
     ctx.builtins["sinh"] = [](double x) { return std::sinh(x); };
     ctx.builtins["cosh"] = [](double x) { return std::cosh(x); };
     ctx.builtins["tanh"] = [](double x) { return std::tanh(x); };

@@ -89,15 +89,19 @@ static bool contains_var(const expr &e, const std::string &var) {
   if (dynamic_cast<const number *>(&e))
     return false;
   if (auto a = dynamic_cast<const add *>(&e))
-    return contains_var(*a->left, var) || contains_var(*a->right, var);
+    return (a->left && contains_var(*a->left, var)) ||
+           (a->right && contains_var(*a->right, var));
   if (auto m = dynamic_cast<const multiply *>(&e))
-    return contains_var(*m->left, var) || contains_var(*m->right, var);
+    return (m->left && contains_var(*m->left, var)) ||
+           (m->right && contains_var(*m->right, var));
   if (auto d = dynamic_cast<const divide *>(&e))
-    return contains_var(*d->left, var) || contains_var(*d->right, var);
+    return (d->left && contains_var(*d->left, var)) ||
+           (d->right && contains_var(*d->right, var));
   if (auto p = dynamic_cast<const pow_node *>(&e))
-    return contains_var(*p->base, var) || contains_var(*p->exponent, var);
+    return (p->base && contains_var(*p->base, var)) ||
+           (p->exponent && contains_var(*p->exponent, var));
   if (auto f = dynamic_cast<const func_call *>(&e))
-    return contains_var(*f->args[0], var);
+    return !f->args.empty() && f->args[0] && contains_var(*f->args[0], var);
   return false;
 }
 
@@ -120,6 +124,8 @@ static bool extract_monomial(const expr &e, const std::string &var,
     }
   }
   if (auto p = dynamic_cast<const pow_node *>(&e)) {
+    if (!p->base || !p->exponent)
+      return false;
     auto v = dynamic_cast<const variable *>(p->base.get());
     auto n = num_val(*p->exponent);
     if (v && v->name == var && n) {
@@ -130,7 +136,7 @@ static bool extract_monomial(const expr &e, const std::string &var,
   }
   if (auto m = dynamic_cast<const multiply *>(&e)) {
     double lc, lp, rc, rp;
-    if (extract_monomial(*m->left, var, lc, lp) &&
+    if (m->left && m->right && extract_monomial(*m->left, var, lc, lp) &&
         extract_monomial(*m->right, var, rc, rp)) {
       coeff = lc * rc;
       power = lp + rp;
@@ -196,10 +202,10 @@ static std::unique_ptr<expr> flatten_frac_product(const expr &e) {
                  mul(ld->right->clone(), rd->right->clone()))
         ->simplify();
   // k*(a/b) or (a/b)*k to (ka)/b
-  if (ld && !contains_var(*m->right, "")) // always try
+  if (ld && ld->left && ld->right)
     return div_e(mul(m->right->clone(), ld->left->clone()), ld->right->clone())
         ->simplify();
-  if (rd)
+  if (rd && rd->left && rd->right)
     return div_e(mul(m->left->clone(), rd->left->clone()), rd->right->clone())
         ->simplify();
   return nullptr;
@@ -212,8 +218,10 @@ static bool extract_polynomial(const expr &e, const std::string &var,
     std::vector<const expr *> terms;
     auto collect = [&](auto self, const expr &ep) -> void {
       if (auto ap = dynamic_cast<const add *>(&ep)) {
-        self(self, *ap->left);
-        self(self, *ap->right);
+        if (ap->left)
+          self(self, *ap->left);
+        if (ap->right)
+          self(self, *ap->right);
       } else {
         terms.push_back(&ep);
       }
@@ -334,6 +342,8 @@ std::unique_ptr<expr> integrate(const expr &e, const std::string &var,
     return nullptr;
 
   auto s = e.simplify();
+  if (!s)
+    return nullptr;
 
 #define TRY(fn)                                                                \
   if (auto res = fn)                                                           \
@@ -384,6 +394,8 @@ static std::unique_ptr<expr> try_constant_rule(const expr &e,
 static std::unique_ptr<expr> try_sum_rule(const expr &e, const std::string &var,
                                           int depth) {
   if (auto a = dynamic_cast<const add *>(&e)) {
+    if (!a->left || !a->right)
+      return nullptr;
     auto l = integrate(*a->left, var, depth);
     auto r = integrate(*a->right, var, depth);
 
@@ -404,19 +416,25 @@ static std::unique_ptr<expr> try_sum_rule(const expr &e, const std::string &var,
 static std::unique_ptr<expr>
 try_constant_multiple_rule(const expr &e, const std::string &var, int depth) {
   if (auto m = dynamic_cast<const multiply *>(&e)) {
-    if (!contains_var(*m->left, var)) {
-      if (auto i = integrate(*m->right, var, depth))
-        return mul(m->left->clone(), std::move(i));
+    if (m->left && !contains_var(*m->left, var)) {
+      if (m->right) {
+        if (auto i = integrate(*m->right, var, depth))
+          return mul(m->left->clone(), std::move(i));
+      }
     }
-    if (!contains_var(*m->right, var)) {
-      if (auto i = integrate(*m->left, var, depth))
-        return mul(m->right->clone(), std::move(i));
+    if (m->right && !contains_var(*m->right, var)) {
+      if (m->left) {
+        if (auto i = integrate(*m->left, var, depth))
+          return mul(m->right->clone(), std::move(i));
+      }
     }
   }
   if (auto d = dynamic_cast<const divide *>(&e)) {
-    if (!contains_var(*d->right, var)) {
-      if (auto i = integrate(*d->left, var, depth))
-        return div_e(std::move(i), d->right->clone());
+    if (d->right && !contains_var(*d->right, var)) {
+      if (d->left) {
+        if (auto i = integrate(*d->left, var, depth))
+          return div_e(std::move(i), d->right->clone());
+      }
     }
   }
   return nullptr;
@@ -659,14 +677,15 @@ static std::unique_ptr<expr> try_exp_rule(const expr &e,
   if (auto f = dynamic_cast<const func_call *>(&e)) {
     if (f->name == "exp") {
       double a, b;
-      if (extract_linear(*f->args[0], var, a, b))
+      if (f->args.size() > 0 && f->args[0] &&
+          extract_linear(*f->args[0], var, a, b))
         return mul(num(1.0 / a), func("exp", f->args[0]->clone()));
     }
   }
   if (auto p = dynamic_cast<const pow_node *>(&e)) {
-    if (!contains_var(*p->base, var)) {
+    if (p->base && !contains_var(*p->base, var)) {
       double a, b;
-      if (extract_linear(*p->exponent, var, a, b)) {
+      if (p->exponent && extract_linear(*p->exponent, var, a, b)) {
         if (auto nc = dynamic_cast<const named_constant *>(p->base.get())) {
           if (nc->name == "e")
             return mul(num(1.0 / a), func("exp", p->exponent->clone()));
