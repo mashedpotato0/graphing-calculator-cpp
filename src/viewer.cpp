@@ -274,7 +274,8 @@ static void update_plotter(GtkWidget *area) {
       if (lhs == "y" || (lhs.find("(x)") != std::string::npos &&
                          lhs.find(',') == std::string::npos)) {
         clean_s = rhs;
-        if (clean_s.find('y') != std::string::npos) {
+        // if rhs has y, it's implicit y = f(x, y)
+        if (rhs.find('y') != std::string::npos) {
           clean_s = "(y)-(" + rhs + ")";
           is_implicit = true;
         } else {
@@ -285,14 +286,21 @@ static void update_plotter(GtkWidget *area) {
         is_plot = true;
       } else if (lhs != "x" && lhs.find('(') == std::string::npos &&
                  lhs.find_first_of("+-*/") == std::string::npos) {
-        // global assign
+        // global assign a = 5
         is_plot = false;
       } else {
-        // generic a + bx = 0
+        // generic implicit A = B -> (A) - (B) = 0
+        clean_s = "(" + lhs + ")-(" + rhs + ")";
+        is_implicit = true;
       }
     } else {
       clean_s = s;
-      is_implicit = false;
+      // check if it has 'y' even without '='
+      if (clean_s.find('y') != std::string::npos) {
+        is_implicit = true;
+      } else {
+        is_implicit = false;
+      }
     }
 
     bool is_polar = false;

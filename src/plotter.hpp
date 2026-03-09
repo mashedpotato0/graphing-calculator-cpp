@@ -206,39 +206,131 @@ public:
       cairo_set_line_width(cr, 2.0);
 
       if (pe.has_y) {
-        // implicit plot marching squares light
-        const int GRID_SIZE = 1; // px step
-        for (int i = 0; i < width; i += GRID_SIZE) {
-          for (int j = 0; j < height; j += GRID_SIZE) {
-            double x1 = to_math_x(i);
-            double y1 = to_math_y(j);
-            double x2 = to_math_x(i + GRID_SIZE);
-            double y2 = to_math_y(j + GRID_SIZE);
+        // Hierarchical Marching Squares 3.0 (Macro/Micro Grid)
+        const int MACRO_GRID = 32;
+        const int MICRO_GRID = 8;
 
-            auto eval_at = [&](double x, double y) {
-              eval.set_var("x", x);
-              eval.set_var("y", y);
-              try {
-                return eval.eval(*pe.ast);
-              } catch (...) {
-                return 0.0;
+        auto eval_fn = [&](double x, double y) -> double {
+          eval.set_var("x", x);
+          eval.set_var("y", y);
+          try {
+            return eval.eval(*pe.ast);
+          } catch (...) {
+            return NAN;
+          }
+        };
+
+        auto lerp = [](double vL, double vR, double pL, double pR) {
+          if (!std::isfinite(vL) || !std::isfinite(vR))
+            return pL;
+          if (std::abs(vL - vR) < 1e-9)
+            return pL;
+          double t = (0 - vL) / (vR - vL);
+          return pL + t * (pR - pL);
+        };
+
+        for (int my = 0; my < height; my += MACRO_GRID) {
+          for (int mx = 0; mx < width; mx += MACRO_GRID) {
+            // Macro-cell check: signs at corners and center
+            double mv00 = eval_fn(to_math_x(mx), to_math_y(my));
+            double mv10 = eval_fn(to_math_x(mx + MACRO_GRID), to_math_y(my));
+            double mv01 = eval_fn(to_math_x(mx), to_math_y(my + MACRO_GRID));
+            double mv11 =
+                eval_fn(to_math_x(mx + MACRO_GRID), to_math_y(my + MACRO_GRID));
+            double mvc = eval_fn(to_math_x(mx + MACRO_GRID / 2.0),
+                                 to_math_y(my + MACRO_GRID / 2.0));
+
+            bool s00 = mv00 > 0, s10 = mv10 > 0, s01 = mv01 > 0, s11 = mv11 > 0,
+                 sc = mvc > 0;
+            bool active = (s00 != s10 || s10 != s11 || s11 != s01 ||
+                           s01 != s00 || s00 != sc);
+
+            if (!active && std::isfinite(mv00) && std::isfinite(mv10) &&
+                std::isfinite(mv01) && std::isfinite(mv11))
+              continue; // Skip empty macro-cell
+
+            // Subdivide into micro-grid
+            for (int j = my; j < std::min(my + MACRO_GRID, height);
+                 j += MICRO_GRID) {
+              for (int i = mx; i < std::min(mx + MACRO_GRID, width);
+                   i += MICRO_GRID) {
+                double v00 = eval_fn(to_math_x(i), to_math_y(j));
+                double v10 = eval_fn(to_math_x(i + MICRO_GRID), to_math_y(j));
+                double v01 = eval_fn(to_math_x(i), to_math_y(j + MICRO_GRID));
+                double v11 = eval_fn(to_math_x(i + MICRO_GRID),
+                                     to_math_y(j + MICRO_GRID));
+
+                if (!std::isfinite(v00) && !std::isfinite(v10) &&
+                    !std::isfinite(v01) && !std::isfinite(v11))
+                  continue;
+
+                int index = (v00 > 0 ? 1 : 0) | (v10 > 0 ? 2 : 0) |
+                            (v11 > 0 ? 4 : 0) | (v01 > 0 ? 8 : 0);
+                if (index == 0 || index == 15)
+                  continue;
+
+                struct Point {
+                  double x, y;
+                };
+                auto get_edge_pt = [&](int edge) -> Point {
+                  switch (edge) {
+                  case 0:
+                    return {lerp(v00, v10, i, i + MICRO_GRID), (double)j};
+                  case 1:
+                    return {(double)i + MICRO_GRID,
+                            lerp(v10, v11, j, j + MICRO_GRID)};
+                  case 2:
+                    return {lerp(v01, v11, i, i + MICRO_GRID),
+                            (double)j + MICRO_GRID};
+                  case 3:
+                    return {(double)i, lerp(v00, v01, j, j + MICRO_GRID)};
+                  default:
+                    return {0, 0};
+                  }
+                };
+
+                // Marching Squares segments for each case
+                auto draw_seg = [&](int e1, int e2) {
+                  Point p1 = get_edge_pt(e1), p2 = get_edge_pt(e2);
+                  cairo_move_to(cr, p1.x, p1.y);
+                  cairo_line_to(cr, p2.x, p2.y);
+                };
+
+                switch (index) {
+                case 1:
+                case 14:
+                  draw_seg(0, 3);
+                  break;
+                case 2:
+                case 13:
+                  draw_seg(0, 1);
+                  break;
+                case 3:
+                case 12:
+                  draw_seg(1, 3);
+                  break;
+                case 4:
+                case 11:
+                  draw_seg(1, 2);
+                  break;
+                case 5:
+                  draw_seg(0, 1);
+                  draw_seg(2, 3);
+                  break; // Saddle 1
+                case 6:
+                case 9:
+                  draw_seg(0, 2);
+                  break;
+                case 7:
+                case 8:
+                  draw_seg(2, 3);
+                  break;
+                case 10:
+                  draw_seg(0, 3);
+                  draw_seg(1, 2);
+                  break; // Saddle 2
+                }
               }
-            };
-
-            double v11 = eval_at(x1, y1);
-            double v12 = eval_at(x1, y2);
-            double v21 = eval_at(x2, y1);
-            double v22 = eval_at(x2, y2);
-
-            // sign change check all 4 edges
-            bool s11 = v11 > 0;
-            bool s12 = v12 > 0;
-            bool s21 = v21 > 0;
-            bool s22 = v22 > 0;
-
-            if (s11 != s21 || s12 != s22 || s11 != s12 || s21 != s22) {
-              cairo_move_to(cr, i, j);
-              cairo_line_to(cr, i + GRID_SIZE, j + GRID_SIZE);
             }
           }
         }
