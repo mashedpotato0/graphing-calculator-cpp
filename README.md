@@ -34,7 +34,7 @@ The project separates the symbolic algebra engine from the hardware-accelerated 
 ### Polar Plotting and Animations
 The engine supports complex polar equations, such as $r = f(\theta)$, utilizing high-resolution sampling to ensure smooth rendering and animation.
 
-![Polar Demo](assets/polar_demo.mp4)
+![Polar Demo](assets/polar_demo.gif)
 *Demo: Real-time rendering of polar roses and parametric curves.*
 
 ### Live Symbolic Results
