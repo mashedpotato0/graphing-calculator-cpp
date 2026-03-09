@@ -1,0 +1,41 @@
+name: build windows
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-pkg-config
+            make
+
+      - name: compile and package
+        shell: msys2 {0}
+        run: |
+          # compile application
+          make viewer
+          
+          # create deployment directory
+          mkdir standalone_release
+          cp viewer.exe standalone_release/
+          cp -r assets standalone_release/ 2>/dev/null || true
+          
+          # extract and copy required dlls
+          ldd viewer.exe | grep -io '/ucrt64/bin/.*\.dll' | xargs -I{} cp "C:/msys64{}" standalone_release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: standalone_release/
