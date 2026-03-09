@@ -1,6 +1,8 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <functional>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <optional>
@@ -230,19 +232,37 @@ struct multiply : expr {
     return left->eval(ctx) * right->eval(ctx);
   }
   std::string to_string() const override {
-    if (left && left->is_number() && std::abs(*left->get_number() + 1.0) < 1e-9)
-      return "-" + (right ? right->to_string() : "?");
+    if (left && left->is_number()) {
+      double lv = *left->get_number();
+      if (std::abs(lv + 1.0) < 1e-9)
+        return "-" + (right ? right->to_string() : "?");
+    }
 
-    // implicit mult: num before var or brace
-    if (left && right && left->is_number() && !right->is_number()) {
-      auto r_str = right->to_string();
-      if (!r_str.empty() && r_str[0] != '\\') { // avoid 2\frac{...}
-        // 2x fine 2\sin{x} fine
-        return left->to_string() + r_str;
+    auto l_str = (left ? left->to_string() : "?");
+    auto r_str = (right ? right->to_string() : "?");
+
+    // implicit mult: num/var before var/brace/fn, or product ending in var
+    // before brace/fn
+    if (left && right) {
+      bool l_simple =
+          left->is_number() || dynamic_cast<const variable *>(left.get());
+      if (!l_simple) {
+        if (auto lm = dynamic_cast<const multiply *>(left.get())) {
+          if (lm->right && (lm->right->is_number() ||
+                            dynamic_cast<const variable *>(lm->right.get()))) {
+            l_simple = true;
+          }
+        }
+      }
+
+      if (l_simple && !right->is_number()) {
+        if (!r_str.empty() && r_str[0] != '-' && r_str[0] != '+' &&
+            r_str[0] != '(') {
+          return l_str + r_str;
+        }
       }
     }
-    return (left ? left->to_string() : "?") + "*" +
-           (right ? right->to_string() : "?");
+    return l_str + "*" + r_str;
   }
   bool is_negative() const override {
     if (auto n = dynamic_cast<const number *>(left.get())) {
@@ -577,6 +597,12 @@ struct integral : expr {
     double b = 0.0;
     if (upper)
       b = upper->eval(ctx);
+    else if (!lower) {
+      // Indefinite integral: treat as integral from 0 to current variable value
+      if (ctx.vars.count(var)) {
+        b = ctx.vars.at(var);
+      }
+    }
 
     if (std::abs(a - b) < 1e-12 && (lower && upper))
       return 0.0;
@@ -590,12 +616,13 @@ struct integral : expr {
       return integrand->eval(ctx);
     };
 
-    double sum = f(a) + f(b);
-    for (int i = 1; i < n; i++) {
-      double x = a + i * h;
-      double fx = f(x);
-      // std::cout << "DEBUG: f(" << x << ") = " << fx << std::endl;
-      sum += (i % 2 == 0 ? 2 : 4) * fx;
+    double sum = (std::abs(h) < 1e-15) ? 0.0 : (f(a) + f(b));
+    if (std::abs(h) > 1e-15) {
+      for (int i = 1; i < n; i++) {
+        double x = a + i * h;
+        double fx = f(x);
+        sum += (i % 2 == 0 ? 2 : 4) * fx;
+      }
     }
 
     ctx.vars[var] = old_v;
@@ -850,64 +877,39 @@ multiply::derivative(const std::string &var) const {
 }
 
 inline std::unique_ptr<expr> multiply::simplify() const {
-  auto l = left->simplify();
-  auto r = right->simplify();
-  if (l->is_zero() || r->is_zero())
-    return std::make_unique<number>(0);
-  if (l->is_one())
-    return r;
-  if (r->is_one())
-    return l;
-
-  // push numbers left
-  if (r->is_number() && !l->is_number())
-    return std::make_unique<multiply>(std::move(r), std::move(l));
-
-  // constant folding for nested multiplications
-  if (l->is_number()) {
-    double val = *l->get_number();
-    if (r->is_number())
-      return std::make_unique<number>(val * *r->get_number());
-
-    // distribute neg
-    if (std::abs(val + 1.0) < 1e-9) {
-      if (auto ra = dynamic_cast<add *>(r.get())) {
-        return std::make_unique<add>(
-                   std::make_unique<multiply>(std::make_unique<number>(-1.0),
-                                              ra->left->clone()),
-                   std::make_unique<multiply>(std::make_unique<number>(-1.0),
-                                              ra->right->clone()))
-            ->simplify();
-      }
+  std::vector<std::unique_ptr<expr>> factors;
+  std::function<void(const expr &)> collect = [&](const expr &e) {
+    if (auto m = dynamic_cast<const multiply *>(&e)) {
+      if (m->left)
+        collect(*m->left);
+      if (m->right)
+        collect(*m->right);
+    } else {
+      factors.push_back(e.simplify());
     }
+  };
+  collect(*this);
 
-    // flatten nested multiplications
-    if (auto rm = dynamic_cast<multiply *>(r.get())) {
-      if (rm->left->is_number()) {
-        double new_val = val * *rm->left->get_number();
-        return std::make_unique<multiply>(std::make_unique<number>(new_val),
-                                          rm->right->simplify())
-            ->simplify();
-      }
+  double constant = 1.0;
+  std::vector<std::unique_ptr<expr>> non_consts;
+  for (auto &f : factors) {
+    if (f->is_zero())
+      return std::make_unique<number>(0);
+    if (f->is_one())
+      continue;
+    if (auto val = f->get_number()) {
+      constant *= *val;
+    } else {
+      non_consts.push_back(std::move(f));
     }
   }
 
-  // x * (5 * y) -> 5 * (x * y)
-  if (!l->is_number()) {
-    if (auto rm = dynamic_cast<multiply *>(r.get())) {
-      if (rm->left->is_number()) {
-        return std::make_unique<multiply>(
-                   rm->left->clone(),
-                   std::make_unique<multiply>(l->clone(), rm->right->clone())
-                       ->simplify())
-            ->simplify();
-      }
-    }
-  }
-
-  // a*x*b*y handled by pulling numbers
-
-  // fold powers x*x to x^2
+  // group powers like x * x^2 -> x^3
+  struct factor_group {
+    std::unique_ptr<expr> base;
+    std::unique_ptr<expr> exponent;
+  };
+  std::vector<factor_group> groups;
   auto get_base_exp = [](const expr *e, const expr *&base,
                          std::unique_ptr<expr> &exp_ptr) {
     if (auto p = dynamic_cast<const pow_node *>(e)) {
@@ -919,38 +921,73 @@ inline std::unique_ptr<expr> multiply::simplify() const {
     }
   };
 
-  const expr *b1;
-  std::unique_ptr<expr> e1_ex;
-  const expr *b2;
-  std::unique_ptr<expr> e2_ex;
-  get_base_exp(l.get(), b1, e1_ex);
-  get_base_exp(r.get(), b2, e2_ex);
-
-  if (!l->is_number() && !r->is_number() && b1->equals(*b2)) {
-    return std::make_unique<pow_node>(
-               b1->clone(),
-               std::make_unique<add>(std::move(e1_ex), std::move(e2_ex))
-                   ->simplify())
-        ->simplify();
-  }
-
-  // handle ax*x
-  if (auto lm = dynamic_cast<multiply *>(l.get())) {
-    const expr *b1_in;
-    std::unique_ptr<expr> e1_in;
-    get_base_exp(lm->right.get(), b1_in, e1_in);
-    if (!lm->right->is_number() && !r->is_number() && b1_in->equals(*b2)) {
-      auto new_pow = std::make_unique<pow_node>(
-                         b1_in->clone(), std::make_unique<add>(std::move(e1_in),
-                                                               std::move(e2_ex))
-                                             ->simplify())
+  for (auto &f : non_consts) {
+    const expr *b;
+    std::unique_ptr<expr> e;
+    get_base_exp(f.get(), b, e);
+    bool found = false;
+    for (auto &g : groups) {
+      if (g.base->equals(*b)) {
+        g.exponent = std::make_unique<add>(std::move(g.exponent), std::move(e))
                          ->simplify();
-      return std::make_unique<multiply>(lm->left->clone(), std::move(new_pow))
-          ->simplify();
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      groups.push_back({b->clone(), std::move(e)});
     }
   }
 
-  return std::make_unique<multiply>(std::move(l), std::move(r));
+  std::vector<std::unique_ptr<expr>> final_factors;
+  bool skip_one = !groups.empty();
+
+  if (!skip_one || std::abs(constant - 1.0) > 1e-9) {
+    if (std::abs(constant + 1.0) < 1e-9 && !groups.empty()) {
+      // keep as -1 if it's the only constant, but handled in to_string
+      final_factors.push_back(std::make_unique<number>(-1.0));
+    } else if (std::abs(constant - 1.0) > 1e-9 || groups.empty()) {
+      final_factors.push_back(std::make_unique<number>(constant));
+    }
+  }
+
+  for (auto &g : groups) {
+    if (g.exponent->is_zero())
+      continue;
+    if (g.exponent->is_one()) {
+      final_factors.push_back(std::move(g.base));
+    } else {
+      final_factors.push_back(
+          std::make_unique<pow_node>(std::move(g.base), std::move(g.exponent))
+              ->simplify());
+    }
+  }
+
+  if (final_factors.empty())
+    return std::make_unique<number>(1);
+  if (final_factors.size() == 1)
+    return std::move(final_factors[0]);
+
+  // push numbers to the left, then variables, then others
+  std::sort(final_factors.begin(), final_factors.end(),
+            [](const auto &a, const auto &b) {
+              int score_a =
+                  a->is_number()
+                      ? 0
+                      : (dynamic_cast<const variable *>(a.get()) ? 1 : 2);
+              int score_b =
+                  b->is_number()
+                      ? 0
+                      : (dynamic_cast<const variable *>(b.get()) ? 1 : 2);
+              return score_a < score_b;
+            });
+
+  std::unique_ptr<expr> res = std::move(final_factors[0]);
+  for (size_t i = 1; i < final_factors.size(); ++i) {
+    res =
+        std::make_unique<multiply>(std::move(res), std::move(final_factors[i]));
+  }
+  return res;
 }
 
 inline std::unique_ptr<expr> divide::derivative(const std::string &var) const {

@@ -31,7 +31,8 @@ public:
   }
 
   // var bindings f(x) = ...
-  bool define_from_string(const std::string &def_str, std::string &error) {
+  bool define_from_string(const std::string &def_str, const context &ctx,
+                          std::string &error) {
     // find paren and eq
     auto lp = def_str.find('(');
     auto rp = def_str.find(')');
@@ -73,7 +74,9 @@ public:
       return false;
     }
 
-    define(fname, params, std::shared_ptr<expr>(ast.release()), def_str);
+    auto expanded = ast->expand(ctx);
+    auto simplified = expanded->simplify();
+    define(fname, params, std::shared_ptr<expr>(simplified.release()), def_str);
     return true;
   }
 
@@ -140,6 +143,9 @@ public:
   // install into builtins
   void install_into(context &ctx) const {
     for (auto &[name, def] : funcs) {
+      // populate for symbolic expansion
+      ctx.funcs[name] = {def.params, def.body};
+
       if (def.params.size() == 1) {
         const std::string pname = def.params[0];
         std::shared_ptr<expr> body = def.body;

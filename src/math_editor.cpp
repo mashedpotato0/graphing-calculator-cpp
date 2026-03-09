@@ -51,9 +51,9 @@ RenderMetrics MathFraction::measure(cairo_t *cr, double font_size) {
   auto num = numerator->measure(cr, font_size * 0.9);
   auto den = denominator->measure(cr, font_size * 0.9);
 
-  last_metrics.width = std::max(num.width, den.width) + 10;
-  last_metrics.ascent = num.height() + 4;
-  last_metrics.descent = den.height() + 4;
+  last_metrics.width = std::max(num.width, den.width) + 12;
+  last_metrics.ascent = num.height() + 8;
+  last_metrics.descent = den.height() + 8;
   last_metrics.scale = 1.0;
   return last_metrics;
 }
@@ -62,17 +62,14 @@ void MathFraction::draw(cairo_t *cr, double x, double y, double font_size) {
   last_x = x;
   last_y = y;
 
-  double num_font = font_size * 0.9;
-  double den_font = font_size * 0.9;
-
   double mid_x = x + last_metrics.width / 2.0;
 
   numerator->draw(cr, mid_x - numerator->last_metrics.width / 2.0,
-                  y - 6 - numerator->last_metrics.descent, num_font);
+                  y - 8 - numerator->last_metrics.descent, font_size * 0.9);
   denominator->draw(cr, mid_x - denominator->last_metrics.width / 2.0,
-                    y + 6 + denominator->last_metrics.ascent, den_font);
+                    y + 8 + denominator->last_metrics.ascent, font_size * 0.9);
 
-  cairo_set_line_width(cr, 1.5);
+  cairo_set_line_width(cr, 1.2);
   cairo_move_to(cr, x + 2, y - 4);
   cairo_line_to(cr, x + last_metrics.width - 2, y - 4);
   cairo_stroke(cr);
@@ -89,11 +86,11 @@ MathPower::MathPower() {
 }
 
 RenderMetrics MathPower::measure(cairo_t *cr, double font_size) {
-  auto exp = exponent->measure(cr, font_size * 0.6);
+  auto m = exponent->measure(cr, font_size * 0.6);
 
-  last_metrics.width = exp.width + 1;
-  last_metrics.ascent = exp.height() + font_size * 0.5;
-  last_metrics.descent = 0; // min descent
+  last_metrics.width = m.width + 2;
+  last_metrics.ascent = font_size * 0.8 + m.ascent;
+  last_metrics.descent = font_size * 0.3;
   last_metrics.scale = 1.0;
   return last_metrics;
 }
@@ -119,9 +116,9 @@ MathSqrt::~MathSqrt() = default;
 
 RenderMetrics MathSqrt::measure(cairo_t *cr, double font_size) {
   auto m = content->measure(cr, font_size);
-  last_metrics.width = m.width + font_size * 0.7; // radical room
-  last_metrics.ascent = m.ascent + 4;
-  last_metrics.descent = m.descent;
+  last_metrics.width = m.width + font_size * 0.8;
+  last_metrics.ascent = m.ascent + 6;
+  last_metrics.descent = m.descent + 2;
   last_metrics.scale = 1.0;
   return last_metrics;
 }
@@ -161,12 +158,15 @@ RenderMetrics MathIntegral::measure(cairo_t *cr, double font_size) {
   auto lo = lower->measure(cr, sf);
   auto up = upper->measure(cr, sf);
 
-  // int sym width
-  double sym_w = font_size * 0.55;
+  double sym_w = font_size * 0.6;
   double bound_w = std::max(lo.width, up.width);
-  last_metrics.width = sym_w + bound_w + 2;
-  last_metrics.ascent = std::max(font_size * 0.9, up.height() + 2);
-  last_metrics.descent = std::max(font_size * 0.3, lo.height() + 2);
+  last_metrics.width = sym_w + bound_w + 4;
+
+  // ascent from main baseline
+  last_metrics.ascent =
+      std::max(font_size * 1.0, font_size * 0.7 + up.ascent + up.descent);
+  last_metrics.descent =
+      std::max(font_size * 0.4, font_size * 0.3 + lo.ascent + lo.descent);
   last_metrics.scale = 1.0;
   return last_metrics;
 }
@@ -306,6 +306,7 @@ void MathEditor::insert_char(const std::string &c) {
         cursor_index -= len;
         if (kw.is_integral) {
           // insert struct int node
+          auto integ = std::make_unique<MathIntegral>();
           active_box->insert(cursor_index, std::move(integ));
           cursor_index++;
         } else if (kw.is_sqrt) {
@@ -431,53 +432,13 @@ void MathEditor::backspace() {
 }
 
 // nav logic below
-auto sqrt_node = std::make_unique<MathSqrt>();
-auto sqrt_ptr = sqrt_node.get();
+void MathEditor::insert_sqrt() {
+  auto sqrt_node = std::make_unique<MathSqrt>();
+  auto sqrt_ptr = sqrt_node.get();
 
-if (cursor_index > 0) {
-  int start_idx = cursor_index - 1;
-  if (active_box->nodes[cursor_index - 1]->to_string() == ")") {
-    int depth = 0;
-    for (int i = cursor_index - 1; i >= 0; --i) {
-      std::string s = active_box->nodes[i]->to_string();
-      if (s == ")")
-        depth++;
-      else if (s == "(") {
-        depth--;
-        if (depth == 0) {
-          start_idx = i;
-          break;
-        }
-      }
-    }
-  } else {
-    for (int i = cursor_index - 1; i >= 0; --i) {
-      std::string s = active_box->nodes[i]->to_string();
-      if (!s.empty() && (std::isalnum(s[0]) || s[0] == '_' || s[0] == '.')) {
-        start_idx = i;
-      } else {
-        break;
-      }
-    }
-  }
-
-  int count = cursor_index - start_idx;
-  if (count > 0) {
-    for (int i = 0; i < count; ++i) {
-      sqrt_ptr->content->nodes.push_back(
-          std::move(active_box->nodes[start_idx]));
-      active_box->nodes.erase(active_box->nodes.begin() + start_idx);
-    }
-    for (auto &n : sqrt_ptr->content->nodes) {
-      n->parent_box = sqrt_ptr->content.get();
-    }
-    cursor_index = start_idx;
-  }
-}
-
-active_box->insert(cursor_index, std::move(sqrt_node));
-active_box = sqrt_ptr->content.get();
-cursor_index = active_box->nodes.size();
+  active_box->insert(cursor_index, std::move(sqrt_node));
+  active_box = sqrt_ptr->content.get();
+  cursor_index = 0;
 }
 
 void MathEditor::delete_forward() {

@@ -228,7 +228,9 @@ static void update_plotter(GtkWidget *area) {
             parser pr(tokens);
             auto body = pr.parse_expr();
             if (body) {
-              eval_engine.ctx.funcs[fname] = {params, std::move(body)};
+              auto expanded = body->expand(eval_engine.ctx);
+              auto simplified = expanded->simplify();
+              eval_engine.ctx.funcs[fname] = {params, std::move(simplified)};
             }
           } catch (...) {
           }
@@ -269,7 +271,8 @@ static void update_plotter(GtkWidget *area) {
       lhs.erase(0, lhs.find_first_not_of(" \t"));
       lhs.erase(lhs.find_last_not_of(" \t") + 1);
 
-      if (lhs == "y" || lhs == "f(x)" || lhs == "g(x)" || lhs == "h(x)") {
+      if (lhs == "y" || (lhs.find("(x)") != std::string::npos &&
+                         lhs.find(',') == std::string::npos)) {
         clean_s = rhs;
         if (clean_s.find('y') != std::string::npos) {
           clean_s = "(y)-(" + rhs + ")";
@@ -394,35 +397,36 @@ static void update_plotter(GtkWidget *area) {
       try {
         auto tokens = tokenize(clean_s);
         parser p(tokens);
-        auto ast = p.parse_expr();
-        if (ast) {
+        auto original_ast = p.parse_expr();
+        if (original_ast) {
+          std::unique_ptr<expr> plotted_ast = nullptr;
           try {
-            ast = ast->simplify();
+            plotted_ast = original_ast->expand(eval_engine.ctx)->simplify();
           } catch (...) {
-            ast = nullptr;
+            plotted_ast = original_ast->clone();
           }
-          if (ast) {
+
+          if (plotted_ast) {
             auto &c = COLORS[eq->color_idx % 5];
-            plotter.expressions.push_back({std::move(ast), c[0], c[1], c[2],
-                                           eq->visible, is_implicit, is_polar,
-                                           eq->theta_min, eq->theta_max, s});
+            plotter.expressions.push_back(
+                {plotted_ast->clone(), c[0], c[1], c[2], eq->visible,
+                 is_implicit, is_polar, eq->theta_min, eq->theta_max, s});
 
             // result number display
             std::set<std::string> vars;
-            plotter.expressions.back().ast->collect_variables(vars);
-            // if no var it is constant op
+            plotted_ast->collect_variables(vars);
             if (vars.find("x") == vars.end() && vars.find("y") == vars.end() &&
                 vars.find("theta") == vars.end() && !is_polar) {
               plotter.expressions.back().visible = false;
               try {
-                double res =
-                    plotter.expressions.back().ast->eval(eval_engine.ctx);
-                char buf[64];
+                double res = plotted_ast->eval(eval_engine.ctx);
+                char res_buf[64];
                 if (std::abs(res - std::round(res)) < 1e-9)
-                  snprintf(buf, sizeof(buf), "= %d", (int)std::round(res));
+                  snprintf(res_buf, sizeof(res_buf), "= %d",
+                           (int)std::round(res));
                 else
-                  snprintf(buf, sizeof(buf), "= %.6g", res);
-                gtk_label_set_text(GTK_LABEL(eq->result_label), buf);
+                  snprintf(res_buf, sizeof(res_buf), "= %.6g", res);
+                gtk_label_set_text(GTK_LABEL(eq->result_label), res_buf);
                 gtk_widget_set_visible(eq->result_label, true);
               } catch (...) {
                 gtk_widget_set_visible(eq->result_label, false);
@@ -431,37 +435,43 @@ static void update_plotter(GtkWidget *area) {
               gtk_widget_set_visible(eq->result_label, false);
             }
 
-            // symbolic result for deriv int etc
-            if (ast) {
-              try {
-                // see if we should show symbolic
-                bool show_symbolic = false;
-                if (dynamic_cast<const deriv_node *>(ast.get()) ||
-                    dynamic_cast<const integral *>(ast.get()) ||
-                    dynamic_cast<const func_call *>(ast.get())) {
-                  show_symbolic = true;
-                }
+            // symbolic result
+            try {
+              bool show_symbolic = false;
+              if (dynamic_cast<const deriv_node *>(original_ast.get()) ||
+                  dynamic_cast<const integral *>(original_ast.get()) ||
+                  dynamic_cast<const func_call *>(original_ast.get())) {
+                show_symbolic = true;
+              }
 
-                if (show_symbolic) {
-                  auto sym_res = ast->expand(eval_engine.ctx)->simplify();
-                  // show if diff from input or simplified a lot
-                  if (sym_res && !sym_res->equals(*ast)) {
-                    eq->result_ast = std::move(sym_res);
-                    gtk_widget_set_visible(eq->symbolic_result_area, true);
-                    gtk_widget_queue_draw(eq->symbolic_result_area);
-                  } else {
-                    eq->result_ast = nullptr;
-                    gtk_widget_set_visible(eq->symbolic_result_area, false);
-                  }
+              if (show_symbolic) {
+                if (plotted_ast && !plotted_ast->equals(*original_ast)) {
+                  eq->result_ast = std::move(plotted_ast);
+
+                  // measure height to avoid clipping
+                  cairo_surface_t *surf =
+                      cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+                  cairo_t *cr = cairo_create(surf);
+                  MathRenderer renderer(cr, 16.0);
+                  RenderBox box = renderer.get_total_box(*eq->result_ast);
+                  double h = std::max(30.0, box.height() + 12.0);
+                  gtk_widget_set_size_request(eq->symbolic_result_area, -1,
+                                              (int)h);
+                  cairo_destroy(cr);
+                  cairo_surface_destroy(surf);
+
+                  gtk_widget_set_visible(eq->symbolic_result_area, true);
+                  gtk_widget_queue_draw(eq->symbolic_result_area);
                 } else {
                   eq->result_ast = nullptr;
+                  gtk_widget_set_size_request(eq->symbolic_result_area, -1, 30);
                   gtk_widget_set_visible(eq->symbolic_result_area, false);
                 }
-              } catch (...) {
+              } else {
                 eq->result_ast = nullptr;
                 gtk_widget_set_visible(eq->symbolic_result_area, false);
               }
-            } else {
+            } catch (...) {
               eq->result_ast = nullptr;
               gtk_widget_set_visible(eq->symbolic_result_area, false);
             }
@@ -473,6 +483,7 @@ static void update_plotter(GtkWidget *area) {
       }
     } else {
       gtk_widget_set_visible(eq->result_label, false);
+      gtk_widget_set_visible(eq->symbolic_result_area, false);
     }
 
     // result display for assign a = sin(x)
@@ -533,29 +544,44 @@ static void trigger_equation_update(EquationData *eq_data) {
   update_plotter(area);
 }
 
+static void refresh_editor_height(EquationData *eq) {
+  cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+  cairo_t *cr = cairo_create(surf);
+  auto metrics = eq->editor->root.measure(cr, 20.0);
+  double h = std::max(40.0, metrics.ascent + metrics.descent + 20.0);
+  gtk_widget_set_size_request(eq->editor_area, -1, (int)h);
+  cairo_destroy(cr);
+  cairo_surface_destroy(surf);
+}
+
 static void on_editor_draw(GtkDrawingArea *area, cairo_t *cr, int width,
                            int height, gpointer data) {
   (void)area;
   (void)width;
+  (void)height;
   EquationData *eq = static_cast<EquationData *>(data);
   // draw bg transparent
   cairo_set_source_rgba(cr, 0, 0, 0, 0);
   cairo_paint(cr);
 
   cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
-  eq->editor->draw(cr, 10, height / 2.0 + 6, 20.0);
+  auto metrics = eq->editor->root.measure(cr, 20.0);
+  // vertical center based on content with generous padding
+  eq->editor->draw(cr, 10, metrics.ascent + 10, 20.0);
 }
 
 static void on_symbolic_draw(GtkDrawingArea *area, cairo_t *cr, int width,
                              int height, gpointer data) {
   (void)area;
   (void)width;
+  (void)height;
   EquationData *eq = static_cast<EquationData *>(data);
   if (eq->result_ast) {
     // opacity gray color
     cairo_set_source_rgba(cr, 0.53, 0.53, 0.53, 1.0);
     MathRenderer renderer(cr, 16.0);
-    renderer.render(*eq->result_ast, 30, height / 2.0 + 4);
+    auto box = renderer.get_total_box(*eq->result_ast);
+    renderer.render(*eq->result_ast, 30, box.ascent + 8);
   }
 }
 
@@ -600,6 +626,7 @@ static gboolean on_editor_key(GtkEventControllerKey *controller, guint keyval,
     }
   }
 
+  refresh_editor_height(eq);
   gtk_widget_queue_draw(eq->editor_area);
   trigger_equation_update(eq);
   return TRUE;
@@ -612,6 +639,7 @@ static void on_editor_click(GtkGestureClick *gesture, int n_press, double x,
   EquationData *eq = static_cast<EquationData *>(data);
   gtk_widget_grab_focus(eq->editor_area);
   eq->editor->handle_click(x, y);
+  refresh_editor_height(eq);
   gtk_widget_queue_draw(eq->editor_area);
 }
 
@@ -634,30 +662,29 @@ static void on_slider_changed(GtkRange *range, gpointer data) {
   GtkWidget *val_label =
       GTK_WIDGET(g_object_get_data(G_OBJECT(range), "val-label"));
   // update value label
+  char buf[64];
   snprintf(buf, sizeof(buf), "%.2f", value);
   gtk_label_set_text(GTK_LABEL(val_label), buf);
-}
 
-EquationData *eq =
-    static_cast<EquationData *>(g_object_get_data(G_OBJECT(range), "eq_data"));
-if (eq) {
-  char buf[64];
-  snprintf(buf, sizeof(buf), "%s = %.2f", var_name, value);
-  eq->editor->set_expression(buf);
-  gtk_widget_queue_draw(eq->editor_area);
+  EquationData *eq = static_cast<EquationData *>(
+      g_object_get_data(G_OBJECT(range), "eq_data"));
+  if (eq) {
+    snprintf(buf, sizeof(buf), "%s = %.2f", var_name, value);
+    eq->editor->set_expression(buf);
+    gtk_widget_queue_draw(eq->editor_area);
 
-  // update ast for plot change
-  auto tokens = tokenize(buf);
-  parser p(tokens);
-  try {
-    eq->ast = p.parse_expr();
-  } catch (...) {
+    // update ast for plot change
+    auto tokens = tokenize(buf);
+    parser p(tokens);
+    try {
+      eq->ast = p.parse_expr();
+    } catch (...) {
+    }
   }
-}
 
-GtkWidget *area =
-    GTK_WIDGET(g_object_get_data(G_OBJECT(range), "drawing-area"));
-update_plotter(area);
+  GtkWidget *area =
+      GTK_WIDGET(g_object_get_data(G_OBJECT(range), "drawing-area"));
+  update_plotter(area);
 }
 
 static void on_delete_clicked(GtkButton *btn, gpointer data) {

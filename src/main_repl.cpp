@@ -1,4 +1,4 @@
-// build cmd
+// build g++ -std=c++17 -O2 main_repl.cpp lexer.cpp parser.cpp integrator.cpp -o symcalc
 
 #include "ast.hpp"
 #include "ast_ext.hpp"
@@ -234,7 +234,7 @@ static bool try_func_define(const std::string &line, function_registry &reg,
 
   std::string def_str = trim(line);
   std::string error;
-  if (reg.define_from_string(def_str, error)) {
+  if (reg.define_from_string(def_str, ctx, error)) {
     reg.install_into(ctx);
     std::cout << col::grn << "  defined: " << col::rst << trim(m[1]) << "("
               << trim(m[2]) << ")\n";

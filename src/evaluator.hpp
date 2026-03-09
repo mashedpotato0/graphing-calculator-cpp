@@ -51,7 +51,7 @@ public:
   // user functions
 
   bool define_func(const std::string &def_str, std::string &error) {
-    bool ok = reg.define_from_string(def_str, error);
+    bool ok = reg.define_from_string(def_str, ctx, error);
     if (ok)
       reg.install_into(ctx);
     return ok;
