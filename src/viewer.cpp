@@ -21,14 +21,15 @@ static GtkWidget *equations_vbox;
 static bool dragging = false;
 static double drag_start_center_x, drag_start_center_y;
 
-// Viewport settings for UI
+// views for ui
 static double x_axis_min = -10, x_axis_max = 10;
 static double y_axis_min = -10, y_axis_max = 10;
 
-// Slider animation state
+// animation state
 struct SliderAnimData {
   GtkRange *range;
   double min_val, max_val, step;
+  double speed = 1.0;
   guint timer_id;
   bool playing;
   GtkWidget *play_btn;
@@ -49,9 +50,11 @@ static gboolean slider_anim_tick(gpointer data) {
   if (!anim->playing)
     return G_SOURCE_REMOVE;
   double val = gtk_range_get_value(anim->range);
-  val += anim->step;
+  val += anim->step * anim->speed;
   if (val > anim->max_val)
     val = anim->min_val;
+  else if (val < anim->min_val)
+    val = anim->max_val;
   gtk_range_set_value(anim->range, val);
   return G_SOURCE_CONTINUE;
 }
@@ -77,16 +80,28 @@ struct EquationData {
   std::unique_ptr<MathEditor> editor;
   GtkWidget *color_btn;
   GtkWidget *delete_btn;
-  GtkWidget *slider_box; // For parameter sliders
+  GtkWidget *slider_box; // sliders for params
   GtkWidget *result_label;
   GtkWidget *symbolic_result_area;
   std::unique_ptr<expr> ast;
-  std::unique_ptr<expr> result_ast; // For symbolic results
-  std::string original_expression;  // For label and assignment logic
+  std::unique_ptr<expr> result_ast; // symbolic result
+  std::string original_expression;  // for labels
   std::string error;
   int color_idx;
   bool visible = true;
-  GtkWidget *main_area; // Reference to the main graph area
+  double theta_min = 0, theta_max = 2 * M_PI;
+  GtkWidget *theta_box;
+  GtkWidget *theta_min_entry;
+  GtkWidget *theta_max_entry;
+  GtkWidget *slider_min_entry;
+  GtkWidget *slider_max_entry;
+  GtkWidget *slider_speed_entry;
+  GtkWidget *slider_step_entry;
+  GtkWidget *slider_error_label;
+  double slider_min_val = -10, slider_max_val = 10;
+  double slider_speed = 1.0;
+  double slider_step = 0.1;
+  GtkWidget *main_area; // main graph ref
 };
 
 static void add_equation_row(GtkWidget *vbox, GtkWidget *drawing_area);
@@ -141,7 +156,7 @@ static void update_plotter(GtkWidget *area) {
       {0.75, 0.52, 0.99}  // purple
   };
 
-  // First pass: Process global assignments (e.g., a = 5, f(x) = sin(x))
+  // pass 1 global assign
   eval_engine.ctx.vars.clear();
   eval_engine.ctx.funcs.clear();
   eval_engine.load_constants();
@@ -156,29 +171,37 @@ static void update_plotter(GtkWidget *area) {
     if (eq_pos != std::string::npos) {
       std::string lhs = s.substr(0, eq_pos);
       std::string rhs = s.substr(eq_pos + 1);
-      // Trim lhs
+      // trim lhs
       lhs.erase(0, lhs.find_first_not_of(" \t"));
       lhs.erase(lhs.find_last_not_of(" \t") + 1);
+      rhs.erase(0, rhs.find_first_not_of(" \t"));
+      rhs.erase(rhs.find_last_not_of(" \t") + 1);
 
-      // Simple assignment check: LHS is a single word
+      // check simple assign
       bool is_assignment = true;
       if (lhs.empty())
         is_assignment = false;
-      size_t last_non_ws = lhs.find_last_not_of(" \t");
-      if (last_non_ws != std::string::npos)
-        lhs.erase(last_non_ws + 1);
-      else
-        lhs.clear();
       for (char c : lhs)
         if (!std::isalnum(c) && c != '_' && c != '(' && c != ')' && c != ',') {
           is_assignment = false;
           break;
         }
 
-      if (is_assignment && lhs != "x" && lhs != "y") {
+      // reserve r x y theta
+      std::string lhs_check = lhs;
+      lhs_check.erase(
+          std::remove_if(lhs_check.begin(), lhs_check.end(),
+                         [](char c) { return std::isspace(c) || c == '\\'; }),
+          lhs_check.end());
+
+      if (lhs_check == "r" || lhs == "y" || lhs == "x" ||
+          lhs_check == "\u03b8" || lhs_check == "theta")
+        is_assignment = false;
+
+      if (is_assignment) {
         size_t paren_open = lhs.find('(');
         if (paren_open != std::string::npos) {
-          // Function assignment: f(x) = ... or g(x,y) = ...
+          // fn assign f(x) = ...
           std::string fname = lhs.substr(0, paren_open);
           std::string params_str = lhs.substr(paren_open + 1);
           if (!params_str.empty() && params_str.back() == ')')
@@ -210,7 +233,7 @@ static void update_plotter(GtkWidget *area) {
           } catch (...) {
           }
         } else {
-          // Variable assignment: a = 5
+          // var assign a = 5
           try {
             auto tokens = tokenize(rhs);
             parser pr(tokens);
@@ -232,7 +255,7 @@ static void update_plotter(GtkWidget *area) {
     if (s.empty())
       continue;
 
-    // Smart strip: y = ..., f(x) = ..., etc.
+    // smart strip y = ...
     size_t eq_pos = s.find('=');
     std::string clean_s = s;
     bool is_plot = true;
@@ -242,7 +265,7 @@ static void update_plotter(GtkWidget *area) {
       std::string lhs = s.substr(0, eq_pos);
       std::string rhs = s.substr(eq_pos + 1);
 
-      // Trim lhs
+      // trim lhs
       lhs.erase(0, lhs.find_first_not_of(" \t"));
       lhs.erase(lhs.find_last_not_of(" \t") + 1);
 
@@ -254,19 +277,118 @@ static void update_plotter(GtkWidget *area) {
         } else {
           is_implicit = false;
         }
+      } else if (lhs == "r" || lhs == "r(\\theta)" || lhs == "r(\u03b8)") {
+        // polar detected
+        is_plot = true;
       } else if (lhs != "x" && lhs.find('(') == std::string::npos &&
                  lhs.find_first_of("+-*/") == std::string::npos) {
-        // Global assignment
+        // global assign
         is_plot = false;
       } else {
-        // Equation like x^2+y^2=1 or a+bx=0
-        clean_s = "(" + lhs + ")-(" + rhs + ")";
-        is_implicit = true;
+        // generic a + bx = 0
       }
     } else {
       clean_s = s;
       is_implicit = false;
     }
+
+    bool is_polar = false;
+    std::string lhs_trimmed = "";
+    if (eq_pos != std::string::npos) {
+      lhs_trimmed = s.substr(0, eq_pos);
+      // remove space and slash
+      lhs_trimmed.erase(
+          std::remove_if(lhs_trimmed.begin(), lhs_trimmed.end(),
+                         [](char c) { return std::isspace(c) || c == '\\'; }),
+          lhs_trimmed.end());
+    }
+
+    if (lhs_trimmed == "r" || lhs_trimmed == "r(theta)" ||
+        lhs_trimmed == "r(\u03b8)") {
+      is_polar = true;
+      is_implicit = false;
+      clean_s = s.substr(eq_pos + 1);
+    }
+    auto eval_bound = [&](GtkWidget *entry, double backup_val,
+                          double default_val) {
+      if (!entry)
+        return backup_val;
+      const char *text = gtk_editable_get_text(GTK_EDITABLE(entry));
+      std::string text_s(text);
+      text_s.erase(0, text_s.find_first_not_of(" \t"));
+      text_s.erase(text_s.find_last_not_of(" \t") + 1);
+      if (text_s.empty())
+        return default_val;
+
+      try {
+        auto ts = tokenize(text_s);
+        if (ts.empty() || ts[0].type == tokentype::eof)
+          return default_val;
+        parser p(ts);
+        auto node = p.parse_expr();
+        if (node)
+          return node->eval(eval_engine.ctx);
+      } catch (...) {
+      }
+      return backup_val;
+    };
+
+    if (is_polar) {
+      eq->theta_min = eval_bound(eq->theta_min_entry, eq->theta_min, 0.0);
+      eq->theta_max = eval_bound(eq->theta_max_entry, eq->theta_max, 2 * M_PI);
+    } else if (!is_plot && eq->slider_box) {
+      eq->slider_min_val =
+          eval_bound(eq->slider_min_entry, eq->slider_min_val, -10.0);
+      eq->slider_max_val =
+          eval_bound(eq->slider_max_entry, eq->slider_max_val, 10.0);
+      eq->slider_speed =
+          eval_bound(eq->slider_speed_entry, eq->slider_speed, 1.0);
+      eq->slider_step = eval_bound(eq->slider_step_entry, eq->slider_step, 0.1);
+
+      // check slider bound error
+      if (eq->slider_error_label) {
+        if (eq->slider_min_val > eq->slider_max_val) {
+          gtk_label_set_text(GTK_LABEL(eq->slider_error_label),
+                             "Error: Min bound > Max bound");
+          gtk_widget_set_visible(eq->slider_error_label, true);
+        } else {
+          gtk_widget_set_visible(eq->slider_error_label, false);
+        }
+      }
+
+      GtkWidget *row = gtk_widget_get_first_child(eq->slider_box);
+      if (row) {
+        GtkWidget *slider = nullptr;
+        GtkWidget *c = gtk_widget_get_first_child(row);
+        while (c) {
+          if (GTK_IS_SCALE(c)) {
+            slider = c;
+            break;
+          }
+          c = gtk_widget_get_next_sibling(c);
+        }
+        if (slider) {
+          GtkAdjustment *adj = gtk_range_get_adjustment(GTK_RANGE(slider));
+          if (std::abs(gtk_adjustment_get_lower(adj) - eq->slider_min_val) >
+              1e-9)
+            gtk_adjustment_set_lower(adj, eq->slider_min_val);
+          if (std::abs(gtk_adjustment_get_upper(adj) - eq->slider_max_val) >
+              1e-9)
+            gtk_adjustment_set_upper(adj, eq->slider_max_val);
+
+          SliderAnimData *anim = static_cast<SliderAnimData *>(
+              g_object_get_data(G_OBJECT(slider), "anim"));
+          if (anim) {
+            anim->min_val = eq->slider_min_val;
+            anim->max_val = eq->slider_max_val;
+            anim->speed = eq->slider_speed;
+            anim->step = eq->slider_step;
+          }
+        }
+      }
+    }
+    if (eq->theta_box)
+      gtk_widget_set_visible(eq->theta_box, is_polar);
 
     if (is_plot) {
       try {
@@ -282,13 +404,15 @@ static void update_plotter(GtkWidget *area) {
           if (ast) {
             auto &c = COLORS[eq->color_idx % 5];
             plotter.expressions.push_back({std::move(ast), c[0], c[1], c[2],
-                                           eq->visible, is_implicit, s});
+                                           eq->visible, is_implicit, is_polar,
+                                           eq->theta_min, eq->theta_max, s});
 
-            // Numerical result display
+            // result number display
             std::set<std::string> vars;
             plotter.expressions.back().ast->collect_variables(vars);
-            // If no x or y, it's a constant or definite op
-            if (vars.find("x") == vars.end() && vars.find("y") == vars.end()) {
+            // if no var it is constant op
+            if (vars.find("x") == vars.end() && vars.find("y") == vars.end() &&
+                vars.find("theta") == vars.end() && !is_polar) {
               plotter.expressions.back().visible = false;
               try {
                 double res =
@@ -307,11 +431,10 @@ static void update_plotter(GtkWidget *area) {
               gtk_widget_set_visible(eq->result_label, false);
             }
 
-            // Symbolic result display (for derivatives, integrals, or
-            // user-defined functions)
+            // symbolic result for deriv int etc
             if (ast) {
               try {
-                // Determine if we should show a symbolic result
+                // see if we should show symbolic
                 bool show_symbolic = false;
                 if (dynamic_cast<const deriv_node *>(ast.get()) ||
                     dynamic_cast<const integral *>(ast.get()) ||
@@ -321,8 +444,7 @@ static void update_plotter(GtkWidget *area) {
 
                 if (show_symbolic) {
                   auto sym_res = ast->expand(eval_engine.ctx)->simplify();
-                  // Only show if it's different from the input OR if it's
-                  // simplified a lot
+                  // show if diff from input or simplified a lot
                   if (sym_res && !sym_res->equals(*ast)) {
                     eq->result_ast = std::move(sym_res);
                     gtk_widget_set_visible(eq->symbolic_result_area, true);
@@ -353,7 +475,7 @@ static void update_plotter(GtkWidget *area) {
       gtk_widget_set_visible(eq->result_label, false);
     }
 
-    // Numerical result display for assignments (e.g. a = sin(30))
+    // result display for assign a = sin(x)
     if (!is_plot && eq->ast) {
       try {
         double res = eq->ast->eval(eval_engine.ctx);
@@ -395,7 +517,7 @@ static void trigger_equation_update(EquationData *eq_data) {
       eq_data->original_expression = text;
       eq_data->error = "";
 
-      // Update sliders for this equation
+      // update sliders for eq
       GtkWidget *area = static_cast<GtkWidget *>(
           g_object_get_data(G_OBJECT(eq_data->editor_area), "drawing-area"));
       sync_sliders(eq_data, area);
@@ -405,7 +527,7 @@ static void trigger_equation_update(EquationData *eq_data) {
     eq_data->error = e.what();
   }
 
-  // Refresh plotter
+  // refresh plotter
   GtkWidget *area = static_cast<GtkWidget *>(
       g_object_get_data(G_OBJECT(eq_data->editor_area), "drawing-area"));
   update_plotter(area);
@@ -416,8 +538,7 @@ static void on_editor_draw(GtkDrawingArea *area, cairo_t *cr, int width,
   (void)area;
   (void)width;
   EquationData *eq = static_cast<EquationData *>(data);
-  // draw background transparent for standard style, but we can clear with
-  // transparent
+  // draw bg transparent
   cairo_set_source_rgba(cr, 0, 0, 0, 0);
   cairo_paint(cr);
 
@@ -431,7 +552,8 @@ static void on_symbolic_draw(GtkDrawingArea *area, cairo_t *cr, int width,
   (void)width;
   EquationData *eq = static_cast<EquationData *>(data);
   if (eq->result_ast) {
-    cairo_set_source_rgba(cr, 0.53, 0.53, 0.53, 1.0); // opacity 0.53ish gray
+    // opacity gray color
+    cairo_set_source_rgba(cr, 0.53, 0.53, 0.53, 1.0);
     MathRenderer renderer(cr, 16.0);
     renderer.render(*eq->result_ast, 30, height / 2.0 + 4);
   }
@@ -459,7 +581,7 @@ static gboolean on_editor_key(GtkEventControllerKey *controller, guint keyval,
   } else if (keyval == GDK_KEY_asciicircum) {
     editor->insert_power();
   } else if (keyval == GDK_KEY_underscore) {
-    // Jump into lower bound of preceding integral (if any)
+    // jump into lower bound of int
     if (editor->cursor_index > 0) {
       auto *prev = dynamic_cast<MathIntegral *>(
           editor->active_box->nodes[editor->cursor_index - 1].get());
@@ -469,9 +591,9 @@ static gboolean on_editor_key(GtkEventControllerKey *controller, guint keyval,
       }
     }
   } else if (keyval == GDK_KEY_Return) {
-    // Create new line maybe?
+    // make new line maybe
   } else {
-    // printable ASCII characters
+    // print ascii chars
     if (keyval >= 32 && keyval <= 126) {
       std::string s(1, (char)keyval);
       editor->insert_char(s);
@@ -493,7 +615,7 @@ static void on_editor_click(GtkGestureClick *gesture, int n_press, double x,
   gtk_widget_queue_draw(eq->editor_area);
 }
 
-// End of on_editor_click navigation logic
+// end of click navigation
 
 static void on_add_clicked(GtkButton *btn, gpointer data) {
   (void)data;
@@ -511,39 +633,31 @@ static void on_slider_changed(GtkRange *range, gpointer data) {
 
   GtkWidget *val_label =
       GTK_WIDGET(g_object_get_data(G_OBJECT(range), "val-label"));
-  if (val_label) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%.2f", value);
-    gtk_label_set_text(GTK_LABEL(val_label), buf);
+  // update value label
+  snprintf(buf, sizeof(buf), "%.2f", value);
+  gtk_label_set_text(GTK_LABEL(val_label), buf);
+}
+
+EquationData *eq =
+    static_cast<EquationData *>(g_object_get_data(G_OBJECT(range), "eq_data"));
+if (eq) {
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%s = %.2f", var_name, value);
+  eq->editor->set_expression(buf);
+  gtk_widget_queue_draw(eq->editor_area);
+
+  // update ast for plot change
+  auto tokens = tokenize(buf);
+  parser p(tokens);
+  try {
+    eq->ast = p.parse_expr();
+  } catch (...) {
   }
+}
 
-  EquationData *eq = static_cast<EquationData *>(
-      g_object_get_data(G_OBJECT(range), "eq_data"));
-  if (eq) {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%s = %.2f", var_name, value);
-    // Remove backslashes before passing letter-by-letter to MathEditor,
-    // so its macro detection correctly generates MathSymbols!
-    eq->editor->clear();
-    for (char c : std::string(buf)) {
-      if (c != '\\') {
-        eq->editor->insert_char(std::string(1, c));
-      }
-    }
-    gtk_widget_queue_draw(eq->editor_area);
-
-    // Also update the AST so the plot changes immediately
-    auto tokens = tokenize(buf);
-    parser p(tokens);
-    try {
-      eq->ast = p.parse_expr();
-    } catch (...) {
-    }
-  }
-
-  GtkWidget *area =
-      GTK_WIDGET(g_object_get_data(G_OBJECT(range), "drawing-area"));
-  gtk_widget_queue_draw(area);
+GtkWidget *area =
+    GTK_WIDGET(g_object_get_data(G_OBJECT(range), "drawing-area"));
+update_plotter(area);
 }
 
 static void on_delete_clicked(GtkButton *btn, gpointer data) {
@@ -560,32 +674,16 @@ static void on_delete_clicked(GtkButton *btn, gpointer data) {
   update_plotter(area);
 }
 
-static void on_slider_min_changed(GtkSpinButton *spin, gpointer data) {
-  GtkRange *range = GTK_RANGE(data);
-  double min_val = gtk_spin_button_get_value(spin);
-  GtkAdjustment *adj = gtk_range_get_adjustment(range);
-  gtk_adjustment_set_lower(adj, min_val);
-
-  SliderAnimData *anim =
-      static_cast<SliderAnimData *>(g_object_get_data(G_OBJECT(range), "anim"));
-  if (anim)
-    anim->min_val = min_val;
+static void on_slider_bound_changed(GtkEditable * /*ed*/, gpointer data) {
+  GtkWidget *area = GTK_WIDGET(data);
+  // redraw main for context update
+  gtk_widget_queue_draw(area);
 }
 
-static void on_slider_max_changed(GtkSpinButton *spin, gpointer data) {
-  GtkRange *range = GTK_RANGE(data);
-  double max_val = gtk_spin_button_get_value(spin);
-  GtkAdjustment *adj = gtk_range_get_adjustment(range);
-  gtk_adjustment_set_upper(adj, max_val);
-
-  SliderAnimData *anim =
-      static_cast<SliderAnimData *>(g_object_get_data(G_OBJECT(range), "anim"));
-  if (anim)
-    anim->max_val = max_val;
-}
+// use shared on slider bound changed
 
 static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
-  // Clear existing sliders in this eq box
+  // clear existing sliders in eq box
   GtkWidget *child = gtk_widget_get_first_child(eq->slider_box);
   while (child) {
     GtkWidget *next = gtk_widget_get_next_sibling(child);
@@ -603,14 +701,24 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   lhs.erase(0, lhs.find_first_not_of(" \t"));
   lhs.erase(lhs.find_last_not_of(" \t") + 1);
 
-  // Check if it's a simple assignment (single word LHS, no parenthesis)
+  // simple assign check one word lhs
   bool is_assignment = !lhs.empty();
   for (char c : lhs)
     if (!std::isalnum(c) && c != '_' && c != '\\') {
       is_assignment = false;
       break;
     }
-  if (lhs == "y" || lhs.find('(') != std::string::npos)
+
+  // remove spaces and slash for compare
+  std::string lhs_check = lhs;
+  lhs_check.erase(
+      std::remove_if(lhs_check.begin(), lhs_check.end(),
+                     [](char c) { return std::isspace(c) || c == '\\'; }),
+      lhs_check.end());
+
+  if (lhs_check == "y" || lhs_check == "x" || lhs_check == "r" ||
+      lhs_check == "theta" || lhs_check == "\u03b8" ||
+      lhs.find('(') != std::string::npos)
     is_assignment = false;
 
   if (!is_assignment)
@@ -623,14 +731,13 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   }
 
   double cur_val = eval_engine.ctx.vars[v];
-  double default_min = -10.0, default_max = 10.0;
 
-  // Slider row with play button
+  // slider row with play button
   GtkWidget *slider_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
   gtk_widget_set_margin_start(slider_hbox, 4);
   gtk_widget_set_margin_end(slider_hbox, 4);
 
-  // Play button
+  // play btn
   auto anim = std::make_unique<SliderAnimData>();
   GtkWidget *play_btn =
       gtk_button_new_from_icon_name("media-playback-start-symbolic");
@@ -638,26 +745,32 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   gtk_widget_add_css_class(play_btn, "slider-play-btn");
   gtk_widget_set_size_request(play_btn, 24, 24);
 
-  // Min bound spin button
-  GtkWidget *min_spin = gtk_spin_button_new_with_range(-1000, 1000, 1);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(min_spin), default_min);
-  gtk_widget_set_size_request(min_spin, 55, -1);
-  gtk_widget_add_css_class(min_spin, "slider-bound-spin");
+  // min bound entry
+  GtkWidget *min_entry = gtk_entry_new();
+  eq->slider_min_entry = min_entry;
+  char min_buf[32];
+  snprintf(min_buf, sizeof(min_buf), "%.2f", eq->slider_min_val);
+  gtk_editable_set_text(GTK_EDITABLE(min_entry), min_buf);
+  gtk_widget_set_size_request(min_entry, 45, -1);
+  gtk_widget_add_css_class(min_entry, "slider-bound-entry");
 
-  // Slider
-  GtkWidget *slider = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL,
-                                               default_min, default_max, 0.1);
+  // slider
+  GtkWidget *slider = gtk_scale_new_with_range(
+      GTK_ORIENTATION_HORIZONTAL, eq->slider_min_val, eq->slider_max_val, 0.1);
   gtk_range_set_value(GTK_RANGE(slider), cur_val);
   gtk_widget_set_hexpand(slider, TRUE);
   gtk_scale_set_draw_value(GTK_SCALE(slider), FALSE);
 
-  // Max bound spin button
-  GtkWidget *max_spin = gtk_spin_button_new_with_range(-1000, 1000, 1);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(max_spin), default_max);
-  gtk_widget_set_size_request(max_spin, 55, -1);
-  gtk_widget_add_css_class(max_spin, "slider-bound-spin");
+  // max bound entry
+  GtkWidget *max_entry = gtk_entry_new();
+  eq->slider_max_entry = max_entry;
+  char max_buf[32];
+  snprintf(max_buf, sizeof(max_buf), "%.2f", eq->slider_max_val);
+  gtk_editable_set_text(GTK_EDITABLE(max_entry), max_buf);
+  gtk_widget_set_size_request(max_entry, 45, -1);
+  gtk_widget_add_css_class(max_entry, "slider-bound-entry");
 
-  // Value label
+  // value label
   char val_buf[32];
   snprintf(val_buf, sizeof(val_buf), "%.2f", cur_val);
   GtkWidget *val_label = gtk_label_new(val_buf);
@@ -674,17 +787,57 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   g_signal_connect(slider, "value-changed", G_CALLBACK(on_slider_changed),
                    NULL);
 
-  // Connect min/max spin buttons to adjust slider range
-  g_signal_connect(min_spin, "value-changed", G_CALLBACK(on_slider_min_changed),
-                   slider);
-  g_signal_connect(max_spin, "value-changed", G_CALLBACK(on_slider_max_changed),
-                   slider);
+  // connect entries
+  g_signal_connect(min_entry, "changed", G_CALLBACK(on_slider_bound_changed),
+                   drawing_area);
+  g_signal_connect(max_entry, "changed", G_CALLBACK(on_slider_bound_changed),
+                   drawing_area);
 
-  // Setup animation data
+  // speed and step row
+  GtkWidget *params_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_widget_set_margin_start(params_hbox, 32);
+
+  GtkWidget *speed_label = gtk_label_new("Speed:");
+  gtk_widget_add_css_class(speed_label, "slider-param-label");
+  GtkWidget *speed_entry = gtk_entry_new();
+  eq->slider_speed_entry = speed_entry;
+  char speed_buf[16];
+  snprintf(speed_buf, sizeof(speed_buf), "%.1f", eq->slider_speed);
+  gtk_editable_set_text(GTK_EDITABLE(speed_entry), speed_buf);
+  gtk_widget_set_size_request(speed_entry, 35, -1);
+
+  GtkWidget *step_label = gtk_label_new("Step:");
+  gtk_widget_add_css_class(step_label, "slider-param-label");
+  GtkWidget *step_entry = gtk_entry_new();
+  eq->slider_step_entry = step_entry;
+  char step_buf[16];
+  snprintf(step_buf, sizeof(step_buf), "%.2f", eq->slider_step);
+  gtk_editable_set_text(GTK_EDITABLE(step_entry), step_buf);
+  gtk_widget_set_size_request(step_entry, 45, -1);
+
+  g_signal_connect(speed_entry, "changed", G_CALLBACK(on_slider_bound_changed),
+                   drawing_area);
+  g_signal_connect(step_entry, "changed", G_CALLBACK(on_slider_bound_changed),
+                   drawing_area);
+
+  gtk_box_append(GTK_BOX(params_hbox), speed_label);
+  gtk_box_append(GTK_BOX(params_hbox), speed_entry);
+  gtk_box_append(GTK_BOX(params_hbox), step_label);
+  gtk_box_append(GTK_BOX(params_hbox), step_entry);
+
+  // err label
+  GtkWidget *err_label = gtk_label_new("");
+  eq->slider_error_label = err_label;
+  gtk_widget_add_css_class(err_label, "slider-error-text");
+  gtk_widget_set_visible(err_label, false);
+  gtk_widget_set_margin_start(err_label, 32);
+
+  // anim data
   anim->range = GTK_RANGE(slider);
-  anim->min_val = default_min;
-  anim->max_val = default_max;
-  anim->step = 0.1;
+  anim->min_val = eq->slider_min_val;
+  anim->max_val = eq->slider_max_val;
+  anim->step = eq->slider_step;
+  anim->speed = eq->slider_speed;
   anim->timer_id = 0;
   anim->playing = false;
   anim->play_btn = play_btn;
@@ -695,13 +848,16 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   g_signal_connect(play_btn, "clicked", G_CALLBACK(on_play_clicked), anim_ptr);
 
   gtk_box_append(GTK_BOX(slider_hbox), play_btn);
-  gtk_box_append(GTK_BOX(slider_hbox), min_spin);
+  gtk_box_append(GTK_BOX(slider_hbox), min_entry);
   gtk_box_append(GTK_BOX(slider_hbox), slider);
-  gtk_box_append(GTK_BOX(slider_hbox), max_spin);
+  gtk_box_append(GTK_BOX(slider_hbox), max_entry);
+
   gtk_box_append(GTK_BOX(eq->slider_box), slider_hbox);
+  gtk_box_append(GTK_BOX(eq->slider_box), params_hbox);
+  gtk_box_append(GTK_BOX(eq->slider_box), err_label);
 }
 
-static void on_color_indicator_draw(GtkDrawingArea *area, cairo_t *cr,
+static void on_color_indicator_draw(GtkDrawingArea * /*var*/, cairo_t *cr,
                                     int width, int height, gpointer data) {
   EquationData *eq = (EquationData *)data;
   double r = 0, g = 0, b = 0;
@@ -744,12 +900,12 @@ static void on_color_pressed(GtkGestureClick *gesture, int n_press, double x,
   guint button =
       gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
 
-  if (button == 1) { // Left click
+  if (button == 1) { // left click
     eq->visible = !eq->visible;
     gtk_widget_queue_draw(eq->color_btn);
     update_plotter(eq->main_area);
     sync_settings_ui(eq->main_area);
-  } else if (button == 3) { // Right click
+  } else if (button == 3) { // right click
     GtkWidget *popover = gtk_popover_new();
     gtk_widget_set_parent(popover, eq->color_btn);
     gtk_widget_add_css_class(popover, "settings-popover");
@@ -779,7 +935,7 @@ static void on_color_pressed(GtkGestureClick *gesture, int n_press, double x,
       g_signal_connect_data(
           cbtn, "clicked",
           (GCallback) +
-              [](GtkButton *b, gpointer d) {
+              [](GtkButton * /*b*/, gpointer d) {
                 ColorChoice *c = (ColorChoice *)d;
                 char old_c[32], new_c[32];
                 snprintf(old_c, sizeof(old_c), "color-%d",
@@ -820,7 +976,7 @@ static void add_equation_row(GtkWidget *vbox, GtkWidget *drawing_area) {
 
   GtkWidget *top_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
 
-  // Color indicator (now a DrawingArea for better event reliability)
+  // color indicator draw area
   eq->color_btn = gtk_drawing_area_new();
   gtk_widget_set_size_request(eq->color_btn, 24, 24);
   gtk_widget_set_valign(eq->color_btn, GTK_ALIGN_CENTER);
@@ -832,14 +988,14 @@ static void add_equation_row(GtkWidget *vbox, GtkWidget *drawing_area) {
 
   GtkGesture *color_click = gtk_gesture_click_new();
   gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(color_click),
-                                0); // All buttons
+                                0); // all buttons
   g_signal_connect(color_click, "pressed", G_CALLBACK(on_color_pressed), eq);
   gtk_widget_add_controller(eq->color_btn, GTK_EVENT_CONTROLLER(color_click));
 
   eq->editor = std::make_unique<MathEditor>();
   eq->editor_area = gtk_drawing_area_new();
   gtk_widget_set_hexpand(eq->editor_area, TRUE);
-  gtk_widget_set_size_request(eq->editor_area, -1, 50); // 50px height initially
+  gtk_widget_set_size_request(eq->editor_area, -1, 50); // 50px high
   gtk_widget_add_css_class(eq->editor_area, "equation-editor");
   gtk_widget_set_focusable(eq->editor_area, TRUE);
 
@@ -880,13 +1036,44 @@ static void add_equation_row(GtkWidget *vbox, GtkWidget *drawing_area) {
   eq->slider_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
   gtk_box_append(GTK_BOX(eq->row_box), eq->slider_box);
 
+  // theta bounds row polar plots
+  eq->theta_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+  gtk_widget_set_margin_start(eq->theta_box, 34);
+  gtk_widget_set_visible(eq->theta_box, false);
+
+  eq->theta_min_entry = gtk_entry_new();
+  gtk_editable_set_text(GTK_EDITABLE(eq->theta_min_entry), "0");
+  gtk_widget_set_size_request(eq->theta_min_entry, 60, -1);
+  gtk_box_append(GTK_BOX(eq->theta_box), eq->theta_min_entry);
+
+  GtkWidget *mid_label = gtk_label_new(" \u2264 \u03b8 \u2264 ");
+  gtk_box_append(GTK_BOX(eq->theta_box), mid_label);
+
+  eq->theta_max_entry = gtk_entry_new();
+  gtk_editable_set_text(GTK_EDITABLE(eq->theta_max_entry), "2pi");
+  gtk_widget_set_size_request(eq->theta_max_entry, 60, -1);
+  gtk_box_append(GTK_BOX(eq->theta_box), eq->theta_max_entry);
+
+  g_signal_connect(eq->theta_min_entry, "changed",
+                   G_CALLBACK(+[](GtkEditable *, gpointer d) {
+                     EquationData *eq = (EquationData *)d;
+                     update_plotter(eq->main_area);
+                   }),
+                   eq);
+
+  g_signal_connect(eq->theta_max_entry, "changed",
+                   G_CALLBACK(+[](GtkEditable *, gpointer d) {
+                     EquationData *eq = (EquationData *)d;
+                     update_plotter(eq->main_area);
+                   }),
+                   eq);
+
+  gtk_box_append(GTK_BOX(eq->row_box), eq->theta_box);
+
   g_object_set_data(G_OBJECT(eq->editor_area), "drawing-area", drawing_area);
   g_object_set_data(G_OBJECT(eq->editor_area), "eq_data", eq);
-
   g_object_set_data(G_OBJECT(eq->editor_area), "vbox", vbox);
   g_object_set_data(G_OBJECT(eq->editor_area), "area", drawing_area);
-  // g_signal_connect(eq->editor_area, "activate", G_CALLBACK(on_add_clicked),
-  // NULL);
 
   g_object_set_data(G_OBJECT(eq->delete_btn), "drawing-area", drawing_area);
   g_signal_connect(eq->delete_btn, "clicked", G_CALLBACK(on_delete_clicked),
@@ -898,7 +1085,7 @@ static void add_equation_row(GtkWidget *vbox, GtkWidget *drawing_area) {
   equations.push_back(std::move(eq_ptr));
 }
 
-// Interactivity logic below...
+// interact logic
 
 static void on_drag_begin(GtkGestureDrag *gesture, double x, double y,
                           gpointer data) {
@@ -917,7 +1104,7 @@ static void on_drag_update(GtkGestureDrag *gesture, double x, double y,
   if (plotter.settings.lock_viewport)
     return;
   GtkWidget *area = GTK_WIDGET(data);
-  // x,y are offsets from drag start point
+  // xy offsets from drag start
   plotter.center_x = drag_start_center_x - x / plotter.zoom_x;
   plotter.center_y = drag_start_center_y + y / plotter.zoom_y;
   sync_settings_ui(area);
@@ -932,33 +1119,33 @@ static gboolean on_scroll(GtkEventControllerScroll *scroll, double dx,
     return TRUE;
   GtkWidget *area = GTK_WIDGET(data);
 
-  // Get mouse position for zoom-toward-cursor
+  // mouse pos for zoom cursor
   int w = gtk_widget_get_width(area);
   int h = gtk_widget_get_height(area);
 
-  // Get the current cursor position via the scroll controller
-  double mx = w / 2.0, my = h / 2.0; // fallback to center
+  // cursor pos via scroll ctrl
+  double mx = w / 2.0, my = h / 2.0; // center fallback
   GdkEvent *event =
       gtk_event_controller_get_current_event(GTK_EVENT_CONTROLLER(scroll));
   if (event) {
     double ex, ey;
     if (gdk_event_get_position(event, &ex, &ey)) {
-      // Coordinates are relative to the widget's surface
+      // surface relative coords
       mx = ex;
       my = ey;
     }
   }
 
-  // Convert mouse position to math coordinates before zoom
+  // mouse to math coords before zoom
   double math_x = (mx - w / 2.0) / plotter.zoom_x + plotter.center_x;
   double math_y = (h / 2.0 - my) / plotter.zoom_y + plotter.center_y;
 
-  // Apply zoom
+  // apply zoom
   double factor = (dy < 0) ? 1.1 : 1.0 / 1.1;
   plotter.zoom_x *= factor;
   plotter.zoom_y *= factor;
 
-  // Adjust center so the math point stays under the cursor
+  // adjust center for cursor math point
   plotter.center_x = math_x - (mx - w / 2.0) / plotter.zoom_x;
   plotter.center_y = math_y + (my - h / 2.0) / plotter.zoom_y;
 
@@ -1117,7 +1304,7 @@ static void on_y_step_changed(GtkSpinButton *spin, gpointer) {
 static void activate(GtkApplication *app, gpointer user_data) {
   (void)user_data;
 
-  // Load CSS
+  // load css
   GtkCssProvider *provider = gtk_css_provider_new();
   gtk_css_provider_load_from_string(
       provider,
@@ -1162,10 +1349,15 @@ static void activate(GtkApplication *app, gpointer user_data) {
       ".settings-check { color: #ccc; font-size: 12px; }\n"
       ".settings-label { color: #999; font-size: 12px; }\n"
       ".settings-spin { font-size: 11px; min-width: 60px; }\n"
-      ".slider-play-btn { padding: 0; min-width: 24px; min-height: 24px; "
-      "opacity: 0.6; }\n"
       ".slider-play-btn:hover { opacity: 1.0; }\n"
-      ".slider-bound-spin { font-size: 11px; font-family: monospace; }\n"
+      ".slider-bound-entry { font-size: 11px; font-family: monospace; "
+      "background: rgba(40,40,40,0.4); border: 1px solid #333; color: #ccc; "
+      "border-radius: 4px; padding: 0 4px; }\n"
+      ".slider-param-label { color: #888; font-size: 10px; font-weight: bold; "
+      "text-transform: uppercase; margin-right: 2px; }\n"
+      ".slider-error-text { color: #f87171; font-size: 11px; font-style: "
+      "italic; "
+      "margin-top: 2px; }\n"
       ".mode-btn { padding: 4px 12px; font-size: 12px; border-radius: 4px; }\n"
       ".mode-btn-active { background-color: #3b82f6; color: white; }\n");
   gtk_style_context_add_provider_for_display(
@@ -1175,7 +1367,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
   GtkWidget *window = gtk_application_window_new(app);
   gtk_window_set_title(GTK_WINDOW(window), "C++ Graphing Calculator");
 
-  // Get screen size and set window proportionally
+  // screen size and window prop
   GdkDisplay *display = gdk_display_get_default();
   GListModel *monitors = gdk_display_get_monitors(display);
   GdkMonitor *monitor = GDK_MONITOR(g_list_model_get_item(monitors, 0));
@@ -1194,7 +1386,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
   gtk_window_set_child(GTK_WINDOW(window), paned);
   gtk_paned_set_position(GTK_PANED(paned), 280);
 
-  // Left Panel: Equations
+  // left panel eq
   GtkWidget *left_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_widget_set_size_request(left_vbox, 250, -1);
   gtk_widget_add_css_class(left_vbox, "sidebar");
@@ -1228,7 +1420,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
   gtk_widget_add_css_class(add_btn, "suggested-action");
   gtk_box_append(GTK_BOX(left_vbox), add_btn);
 
-  // Right Panel: Graph with Overlay Settings
+  // right panel graph overlay settings
   GtkWidget *overlay = gtk_overlay_new();
   gtk_paned_set_end_child(GTK_PANED(paned), overlay);
 
@@ -1247,7 +1439,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
   gtk_widget_set_margin_start(settings_btn, 10);
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), settings_btn);
 
-  // Build settings popover
+  // settings popover
   GtkWidget *popover = gtk_popover_new();
   gtk_widget_set_parent(popover, settings_btn);
   gtk_widget_add_css_class(popover, "settings-popover");
@@ -1259,7 +1451,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
   gtk_widget_set_margin_end(settings_box, 12);
   gtk_widget_set_size_request(settings_box, 260, -1);
 
-  // --- Grid Section ---
+  // grid section
   GtkWidget *grid_title = gtk_label_new("Grid");
   gtk_widget_add_css_class(grid_title, "settings-section-title");
   gtk_widget_set_halign(grid_title, GTK_ALIGN_START);
@@ -1300,7 +1492,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
                    G_CALLBACK(on_settings_arrows_toggled), area);
   gtk_box_append(GTK_BOX(settings_box), arrows_check);
 
-  // --- X-Axis Section ---
+  // x axis section
   GtkWidget *sep1 = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
   gtk_box_append(GTK_BOX(settings_box), sep1);
 
@@ -1345,7 +1537,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
   gtk_box_append(GTK_BOX(x_range_box), x_step_spin);
   gtk_box_append(GTK_BOX(settings_box), x_range_box);
 
-  // --- Y-Axis Section ---
+  // y axis section
   GtkWidget *sep2 = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
   gtk_box_append(GTK_BOX(settings_box), sep2);
 
@@ -1390,7 +1582,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
   gtk_box_append(GTK_BOX(y_range_box), y_step_spin);
   gtk_box_append(GTK_BOX(settings_box), y_range_box);
 
-  // --- More Options ---
+  // more options
   GtkWidget *sep3 = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
   gtk_box_append(GTK_BOX(settings_box), sep3);
 
@@ -1441,7 +1633,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
 
   gtk_popover_set_child(GTK_POPOVER(popover), settings_box);
 
-  // Connect settings button to popover
+  // connect settings btn to popover
   g_signal_connect_swapped(settings_btn, "clicked",
                            G_CALLBACK(gtk_popover_popup), popover);
 
@@ -1449,10 +1641,10 @@ static void activate(GtkApplication *app, gpointer user_data) {
   g_object_set_data(G_OBJECT(add_btn), "area", area);
   g_signal_connect(add_btn, "clicked", G_CALLBACK(on_add_clicked), NULL);
 
-  // Initial equation
+  // initial eq row
   add_equation_row(equations_vbox, area);
 
-  // Gestures
+  // gestures
   GtkGesture *drag = gtk_gesture_drag_new();
   g_signal_connect(drag, "drag-begin", G_CALLBACK(on_drag_begin), area);
   g_signal_connect(drag, "drag-update", G_CALLBACK(on_drag_update), area);

@@ -111,8 +111,8 @@ public:
 
 class MathIntegral : public MathNode {
 public:
-  std::unique_ptr<MathBox> lower; // optional, nullptr if indefinite
-  std::unique_ptr<MathBox> upper; // optional, nullptr if indefinite
+  std::unique_ptr<MathBox> lower; // optional null if indef
+  std::unique_ptr<MathBox> upper; // optional null if indef
 
   MathIntegral();
   ~MathIntegral() override;
@@ -121,7 +121,7 @@ public:
   std::string to_string() const override;
   bool is_integral() const override { return true; }
 
-  // Which box is currently active (0=lower, 1=upper, or nullptr if neither)
+  // active box index
   MathBox *active_sub = nullptr;
 };
 
@@ -138,6 +138,7 @@ public:
   MathEditor();
 
   void insert_char(const std::string &c);
+  void set_expression(const std::string &s);
   void insert_fraction();
   void insert_power();
   void insert_integral();

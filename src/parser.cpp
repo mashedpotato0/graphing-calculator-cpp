@@ -57,7 +57,7 @@ std::unique_ptr<expr> parser::parse_primary() {
   }
   token t = current();
 
-  // unary plus/minus
+  // unary op
   if (t.type == tokentype::op && (t.value == "-" || t.value == "+")) {
     advance();
     auto operand = parse_factor();
@@ -69,13 +69,13 @@ std::unique_ptr<expr> parser::parse_primary() {
     return operand;
   }
 
-  // numbers
+  // num
   if (t.type == tokentype::number) {
     advance();
     return std::make_unique<number>(std::stod(t.value));
   }
 
-  // variables & commands
+  // var and cmd
   if (t.type == tokentype::variable) {
     advance();
 
@@ -109,7 +109,7 @@ std::unique_ptr<expr> parser::parse_primary() {
                                         std::move(integrand), var_name);
     }
 
-    // function call
+    // fn call
     if (current().type == tokentype::op && current().value == "(") {
       advance();
       std::vector<std::unique_ptr<expr>> args;
@@ -136,7 +136,7 @@ std::unique_ptr<expr> parser::parse_primary() {
       return call;
     }
 
-    // factorial postfix
+    // fact postfix
     if (current().type == tokentype::op && current().value == "!") {
       advance();
       return std::make_unique<factorial_node>(
@@ -154,7 +154,7 @@ std::unique_ptr<expr> parser::parse_primary() {
     std::string cmd = t.value;
     advance();
 
-    // integral, summation, product
+    // math blocks
     if (cmd == "\\int" || cmd == "\\sum" || cmd == "\\prod") {
       std::unique_ptr<expr> lower = nullptr, upper = nullptr;
       std::string var_name = "x";
@@ -163,7 +163,7 @@ std::unique_ptr<expr> parser::parse_primary() {
           advance();
           if (current().type == tokentype::lbrace) {
             advance();
-            // check for "var=val" for sum/prod
+            // check var val for sum prod
             size_t start_pos = pos;
             if (current().type == tokentype::variable &&
                 (cmd == "\\sum" || cmd == "\\prod")) {
@@ -223,7 +223,7 @@ std::unique_ptr<expr> parser::parse_primary() {
       }
     }
 
-    // limit
+    // lim
     if (cmd == "\\lim") {
       std::string var_name = "x";
       std::unique_ptr<expr> to = nullptr;
@@ -246,7 +246,7 @@ std::unique_ptr<expr> parser::parse_primary() {
                                           std::move(body));
     }
 
-    // gcd / lcm
+    // gcd lcm
     if (cmd == "\\gcd" || cmd == "\\lcm" || cmd == "\\text{lcm}") {
       expect(tokentype::lbrace);
       auto a = parse_expr();
@@ -259,7 +259,7 @@ std::unique_ptr<expr> parser::parse_primary() {
       return std::make_unique<lcm_node>(std::move(a), std::move(b));
     }
 
-    // fraction
+    // frac
     if (cmd == "\\frac") {
       size_t start = pos;
       expect(tokentype::lbrace);
@@ -339,7 +339,7 @@ std::unique_ptr<expr> parser::parse_primary() {
       return std::make_unique<divide>(std::move(n), std::move(d));
     }
 
-    // dbinom / binom
+    // binom
     if (cmd == "\\dbinom" || cmd == "\\binom" || cmd == "\\C") {
       expect(tokentype::lbrace);
       auto n = parse_expr();
@@ -350,7 +350,7 @@ std::unique_ptr<expr> parser::parse_primary() {
       return std::make_unique<combination_node>(std::move(n), std::move(r));
     }
 
-    // P
+    // perm
     if (cmd == "\\P") {
       expect(tokentype::lbrace);
       auto n = parse_expr();
@@ -361,7 +361,7 @@ std::unique_ptr<expr> parser::parse_primary() {
       return std::make_unique<permutation_node>(std::move(n), std::move(r));
     }
 
-    // absolute value
+    // abs val
     if (cmd == "\\left") {
       if (current().value == "|") {
         advance();
@@ -375,7 +375,7 @@ std::unique_ptr<expr> parser::parse_primary() {
       }
     }
 
-    // generic command -> function call
+    // cmd to fn call
     if (current().type == tokentype::lbrace) {
       advance();
       auto arg = parse_expr();
@@ -389,7 +389,7 @@ std::unique_ptr<expr> parser::parse_primary() {
       return std::make_unique<func_call>(cmd.substr(1), std::move(arg));
     }
 
-    // Check if it's a known constant (with or without backslash)
+    // check builtin const
     std::string name = cmd;
     if (name[0] == '\\')
       name = name.substr(1);
@@ -398,10 +398,10 @@ std::unique_ptr<expr> parser::parse_primary() {
       return std::make_unique<named_constant>(name);
     }
 
-    return std::make_unique<variable>(cmd);
+    return std::make_unique<variable>(name);
   }
 
-  // braces / parentheses
+  // parens
   if (t.type == tokentype::lbrace) {
     advance();
     auto e = parse_expr();
@@ -423,10 +423,10 @@ std::unique_ptr<expr> parser::parse_factor() {
   auto base = parse_primary();
   if (!base)
     return nullptr;
-  // Right-associative: e^x^2 => e^(x^2)
+  // right assoc exp
   if (current().value == "^") {
     advance();
-    auto exponent = parse_factor(); // recursive for right-assoc
+    auto exponent = parse_factor(); // recurse right assoc
     if (!exponent)
       throw std::runtime_error("Missing exponent");
     base = std::make_unique<pow_node>(std::move(base), std::move(exponent));

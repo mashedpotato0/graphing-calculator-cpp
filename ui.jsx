@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 
-/* ═══════════════════════════════ MATH ENGINE ══════════════════════════════ */
+// math engine
 
 const _n = v => ({ t: 'num', v });
 const _v = s => ({ t: 'var', name: s });
@@ -27,7 +27,7 @@ function nPr(n, r) { if (r < 0 || r > n) return 0; let res = 1; for (let i = 0; 
 function gcd(a, b) { a = Math.abs(a); b = Math.abs(b); while (b) { [a, b] = [b, a % b]; } return a; }
 function lcm(a, b) { return a && b ? Math.abs(a * b) / gcd(a, b) : 0; }
 
-// ── Tokenizer ────────────────────────────────────────────────────────────────
+// lexer
 function tokenize(src) {
   const toks = []; let i = 0;
   while (i < src.length) {
@@ -47,7 +47,7 @@ function tokenize(src) {
   toks.push({ t: 'EOF', v: '' }); return toks;
 }
 
-// ── Parser ───────────────────────────────────────────────────────────────────
+// parser
 function parseSrc(src) {
   try {
     const toks = tokenize(src); let pos = 0;
@@ -83,13 +83,13 @@ function parseSrc(src) {
   } catch (e) { return { ok: false, err: e.message }; }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// helpers
 function containsVar(ast, v) { if (!ast) return false; if (ast.t === 'var') return ast.name === v; if (ast.t === 'num') return false; if (ast.t === 'neg') return containsVar(ast.a, v); if (ast.t === 'bin') return containsVar(ast.l, v) || containsVar(ast.r, v); if (ast.t === 'func') return ast.args.some(a => containsVar(a, v)); return false; }
 function substVar(ast, from, to) { if (!ast) return ast; if (ast.t === 'var') return ast.name === from ? to : ast; if (ast.t === 'num') return ast; if (ast.t === 'neg') return { t: 'neg', a: substVar(ast.a, from, to) }; if (ast.t === 'bin') return { t: 'bin', op: ast.op, l: substVar(ast.l, from, to), r: substVar(ast.r, from, to) }; if (ast.t === 'func') return { t: 'func', name: ast.name, args: ast.args.map(a => substVar(a, from, to)) }; return ast; }
 function tryEvalNum(ast) { try { const v = evalAST(ast, {}); return (isFinite(v) && !isNaN(v)) ? v : null; } catch { return null; } }
 function isConstIn(ast, v) { const pts = [1.3, 2.7, 4.19]; const vals = pts.map(p => { try { return evalAST(ast, { vars: { [v]: p } }); } catch { return NaN; } }); if (vals.some(x => isNaN(x) || !isFinite(x))) return null; if (Math.abs(vals[0] - vals[1]) < 1e-6 && Math.abs(vals[1] - vals[2]) < 1e-6) return vals[0]; return null; }
 
-// ── Simplifier ───────────────────────────────────────────────────────────────
+// simplify
 function simplify(ast, n = 8) {
   function s(nd) {
     if (!nd || nd.t === 'num' || nd.t === 'var') return nd;
@@ -117,7 +117,7 @@ function simplify(ast, n = 8) {
   let res = ast; for (let i = 0; i < n; i++)res = s(res); return res;
 }
 
-// ── Evaluator ────────────────────────────────────────────────────────────────
+// eval
 function evalAST(ast, env = {}) {
   const vars = { ...NUM_CONSTS, ...(env.vars || {}) };
   const uFns = env.funcs || {};
@@ -134,7 +134,7 @@ function evalAST(ast, env = {}) {
       }
       case 'func': {
         const { name, args } = nd;
-        // summation / product with index variable
+        // sum prod iv
         if ((name === 'sum' || name === 'prod') && args.length === 4) {
           const iv = args[0].t === 'var' ? args[0].name : 'i';
           const fr = Math.round(ev(args[1])), to = Math.round(ev(args[2]));
@@ -142,7 +142,7 @@ function evalAST(ast, env = {}) {
           for (let i = fr; i <= to; i++) { const val = evalAST(args[3], { ...env, vars: { ...vars, [iv]: i } }); name === 'sum' ? acc += val : acc *= val; }
           return acc;
         }
-        // user-defined
+        // user fns
         if (uFns[name]) { const { params, ast: body } = uFns[name]; const lv = { ...vars }; args.forEach((a, i) => lv[params[i]] = ev(a)); return evalAST(body, { ...env, vars: lv }); }
         const a = ev(args[0]), b = args[1] !== undefined ? ev(args[1]) : undefined;
         switch (name) {
@@ -170,7 +170,7 @@ function evalAST(ast, env = {}) {
   return ev(ast);
 }
 
-// ── Differentiator ───────────────────────────────────────────────────────────
+// diff
 function diffAST(ast, v) {
   function d(n) {
     if (!n) return _n(0);
@@ -225,7 +225,7 @@ function diffAST(ast, v) {
   return simplify(d(ast));
 }
 
-// ── Integrator ───────────────────────────────────────────────────────────────
+// int
 function intAST(ast, v, depth = 0) {
   if (depth > 7) return null;
   function liate(n) { if (n.t === 'func') { const nm = n.name; if (['ln', 'log'].includes(nm)) return 0; if (['arcsin', 'arccos', 'arctan', 'arcsinh', 'arccosh', 'arctanh'].includes(nm)) return 1; if (['sin', 'cos', 'tan', 'sec', 'csc', 'cot'].includes(nm)) return 3; if (['exp', 'sinh', 'cosh', 'tanh'].includes(nm)) return 4; } return 2; }
@@ -327,7 +327,7 @@ function intAST(ast, v, depth = 0) {
   return simplify(ti(ast, depth));
 }
 
-// ── AST → LaTeX ──────────────────────────────────────────────────────────────
+// ast to latex
 function toLatex(ast) {
   function needsParens(n, pop, side) {
     if (!n || n.t === 'num' || n.t === 'var' || n.t === 'func') return false;
@@ -385,7 +385,7 @@ function toLatex(ast) {
   return L(ast);
 }
 
-// ── User function parsing ─────────────────────────────────────────────────────
+// user fn parse
 function parseFuncDef(src) {
   const m = src.match(/^\s*([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*=\s*(.+)$/);
   if (!m) return null;
@@ -395,7 +395,7 @@ function parseFuncDef(src) {
   return { name, params, ast: parsed.ast };
 }
 
-/* ═══════════════════════════════ KATEX ════════════════════════════════════ */
+// katex
 function useKaTeX() {
   const [loaded, setLoaded] = useState(!!window.katex);
   useEffect(() => {
@@ -417,7 +417,7 @@ function KTX({ latex, display = false, cls = '' }) {
   return <span ref={ref} className={cls} />;
 }
 
-/* ═══════════════════════════════ CANVAS PLOTTER ══════════════════════════ */
+// plotter
 function Plotter({ userFuncs }) {
   const canvasRef = useRef(null);
   const [plotExpr, setPlotExpr] = useState('sin(x)');
@@ -436,7 +436,7 @@ function Plotter({ userFuncs }) {
     const toX = x => (x - xlo) / (xhi - xlo) * W;
     const toY = y => (1 - (y - ylo) / (yhi - ylo)) * H;
 
-    // background
+    // bg
     ctx.fillStyle = '#080c18'; ctx.fillRect(0, 0, W, H);
 
     // grid
@@ -507,7 +507,7 @@ function Plotter({ userFuncs }) {
 
 const inputStyle = { background: '#0d1120', border: '1px solid #1e2a40', borderRadius: 4, padding: '5px 6px', color: '#94a3b8', fontFamily: 'inherit', fontSize: 12, outline: 'none' };
 
-/* ═══════════════════════════════ SYMBOL DATA ══════════════════════════════ */
+// sym data
 const TABS = [
   {
     id: 'greek', label: 'Gk', symbols: [
@@ -559,7 +559,7 @@ const TABS = [
   },
 ];
 
-/* ═══════════════════════════════ APP ══════════════════════════════════════ */
+// app
 const fmtNum = v => { if (!isFinite(v)) return v > 0 ? '∞' : '-∞'; if (isNaN(v)) return 'NaN'; if (Number.isInteger(v) && Math.abs(v) < 1e12) return String(v); return v.toPrecision(10).replace(/\.?0+$/, ''); };
 
 export default function App() {
@@ -639,14 +639,14 @@ export default function App() {
     setFuncInput('');
   }
 
-  // keyboard shortcuts
+  // keys
   function handleInputKey(e) {
-    // Ctrl+Shift+C to copy current LaTeX or selection
+    // copy current latex or selection
     if (e.key === 'C' && e.ctrlKey && e.shiftKey) {
       e.preventDefault();
       if (inputLatex) {
         copyLatex(inputLatex);
-        // Optional: show some feedback?
+        // feedback
       }
       return;
     }
@@ -685,14 +685,14 @@ export default function App() {
         .copyb{opacity:0;transition:opacity .15s;}.hcard:hover .copyb{opacity:1;}
       `}</style>
 
-      {/* ── Header ───────────────────────────────────────────────────────── */}
+      {/* header */}
       <header style={{ background: '#080b16', borderBottom: '1px solid #141c2e', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 14, userSelect: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
           <span style={{ color: '#f59e0b', fontWeight: 700, fontSize: 17, letterSpacing: '-0.5px' }}>SYM</span>
           <span style={{ color: '#4a5a7a', fontWeight: 300, fontSize: 17 }}>CALC</span>
         </div>
         <div style={{ width: 1, height: 18, background: '#1a2035' }} />
-        <span style={{ fontSize: 10, color: '#2e3f5a', letterSpacing: '.06em' }}>SYMBOLIC MATH ENGINE</span>
+        <span style={{ fontSize: 10, color: '#2e3f5a', letterSpacing: '.06em' }}>SYM ENGINE</span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
           {['calc', 'plot'].map(p => (
             <button key={p} className={`abtn ftab${activePanel === p ? ' on' : ''}`}
@@ -705,14 +705,14 @@ export default function App() {
         {!katexLoaded && <span style={{ fontSize: 10, color: '#f59e0b', marginLeft: 8 }}>loading KaTeX…</span>}
       </header>
 
-      {/* ── Main ─────────────────────────────────────────────────────────── */}
+      {/* main */}
       <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '360px 1fr', overflow: 'hidden', height: 'calc(100vh - 41px)' }}>
 
-        {/* ── LEFT PANEL ─────────────────────────────────────────────────── */}
+        {/* calc panel */}
         <div style={{ borderRight: '1px solid #141c2e', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#070a14' }}>
 
           {activePanel === 'calc' && <>
-            {/* Symbol palette */}
+            {/* symbol palette */}
             <div style={{ borderBottom: '1px solid #141c2e', background: '#080b16', padding: '6px 10px 0' }}>
               <div style={{ display: 'flex', gap: 1, marginBottom: 5 }}>
                 {TABS.map(tb => (
@@ -734,7 +734,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Input area */}
+            {/* input area */}
             <div style={{ padding: 10, flex: '0 0 auto' }}>
               <div className="iarea" style={{ background: '#0c1020', border: '1px solid #172035', borderRadius: 6, overflow: 'hidden' }}>
                 <textarea ref={inputRef} value={input}
@@ -753,7 +753,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Action buttons */}
+            {/* action buttons */}
             <div style={{ padding: '0 10px 8px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
               <button className="abtn" onClick={doEval} disabled={!parsed?.ok}
                 style={{ background: parsed?.ok ? '#122030' : '#0d1520', border: '1px solid #1e3650', borderRadius: 5, padding: '7px 14px', cursor: 'pointer', color: parsed?.ok ? '#60a5fa' : '#2a3a4a', fontFamily: 'inherit', fontSize: 11.5 }}>
@@ -781,14 +781,14 @@ export default function App() {
               </button>}
             </div>
 
-            {/* Eval vars */}
+            {/* eval vars */}
             <div style={{ padding: '0 10px 8px', display: 'flex', gap: 6, alignItems: 'center' }}>
               <span style={{ fontSize: 10, color: '#2e3f5a', whiteSpace: 'nowrap' }}>vars:</span>
               <input value={evalVarsStr} onChange={e => setEvalVarsStr(e.target.value)} placeholder="x=1, y=2, n=10"
                 style={{ flex: 1, ...inputStyle, color: '#94a3b8' }} />
             </div>
 
-            {/* Function registry */}
+            {/* function registry */}
             <div style={{ borderTop: '1px solid #141c2e', flex: 1, overflow: 'auto', padding: 10 }}>
               <div style={{ fontSize: 9.5, color: '#2e3f5a', letterSpacing: '.07em', marginBottom: 7 }}>FUNCTION REGISTRY</div>
               <div style={{ display: 'flex', gap: 5, marginBottom: 6 }}>
@@ -840,9 +840,9 @@ export default function App() {
           )}
         </div>
 
-        {/* ── RIGHT PANEL ────────────────────────────────────────────────── */}
+        {/* right panel */}
         <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#060910' }}>
-          {/* History filter bar */}
+          {/* hist filter */}
           <div style={{ padding: '7px 14px', borderBottom: '1px solid #141c2e', background: '#080b16', display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 9.5, color: '#2e3f5a', letterSpacing: '.07em', marginRight: 4 }}>OUTPUT</span>
             {['all', 'eval', 'diff', 'int'].map(f => (

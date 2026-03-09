@@ -31,7 +31,7 @@ class MathRenderer {
 public:
   MathRenderer(cairo_t *context, double font_size = 24.0)
       : cr(context), base_font_size(font_size) {
-    // Try to find a good serif font that might have math symbols
+    // find serif font
     cairo_select_font_face(cr, "DejaVu Serif", CAIRO_FONT_SLANT_NORMAL,
                            CAIRO_FONT_WEIGHT_NORMAL);
   }
@@ -237,7 +237,7 @@ private:
                                        lower->box.height() + sym.descent * 0.5);
       }
 
-      layout->children.resize(3); // lower, upper, integrand
+      layout->children.resize(3); // lower upper integrand
       layout->children[0] = std::move(lower);
       layout->children[1] = std::move(upper);
       layout->children[2] = std::move(integrand);

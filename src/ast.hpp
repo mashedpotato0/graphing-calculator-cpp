@@ -1,11 +1,11 @@
 #pragma once
 #include <cmath>
 #include <functional>
-#include <iostream>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -13,7 +13,7 @@ struct context;
 struct expr;
 
 namespace symbolic {
-// symbolic integration entry point
+// symbolic int entry point
 std::unique_ptr<expr> integrate(const expr &e, const std::string &var,
                                 int depth = 0);
 } // namespace symbolic
@@ -104,7 +104,7 @@ struct named_constant : expr {
     else if (n == "inf" || n == "infty")
       value = HUGE_VAL;
     else
-      value = 0.0;
+      value = 0.0; // default
   }
   double eval(context &) const override { return value; }
   std::string to_string() const override { return name; }
@@ -176,11 +176,11 @@ struct add : expr {
     std::string l = left ? left->to_string() : "?";
     std::string r = right ? right->to_string() : "?";
     if (right && right->is_negative()) {
-      // If r is negative, it might already start with '-' or '\frac{-...'
-      // But if it's a multiply like -1*x, it starts with '-'
+      // if r neg it might start with - or \frac{-...
+      // if mult -1*x starts with -
       return "(" + l + r + ")";
     }
-    // Check if r starts with '-' from multiply to_string
+    // check if r starts with - from multiply to_string
     if (!r.empty() && r[0] == '-') {
       return "(" + l + r + ")";
     }
@@ -233,11 +233,11 @@ struct multiply : expr {
     if (left && left->is_number() && std::abs(*left->get_number() + 1.0) < 1e-9)
       return "-" + (right ? right->to_string() : "?");
 
-    // Implicit multiplication: number before variable or brace
+    // implicit mult: num before var or brace
     if (left && right && left->is_number() && !right->is_number()) {
       auto r_str = right->to_string();
-      if (!r_str.empty() && r_str[0] != '\\') { // avoid 2\frac{...} maybe
-        // Actually 2x is fine. 2\sin{x} is fine.
+      if (!r_str.empty() && r_str[0] != '\\') { // avoid 2\frac{...}
+        // 2x fine 2\sin{x} fine
         return left->to_string() + r_str;
       }
     }
@@ -413,7 +413,7 @@ struct func_call : expr {
       : name(n), args(std::move(as)) {}
 
   double eval(context &ctx) const override {
-    if (ctx.builtins.count(name)) {
+    if (ctx.builtins.count(name)) { // builtin logic
       if (args.empty() || !args[0])
         return 0.0;
       double val = args[0]->eval(ctx);
@@ -431,6 +431,7 @@ struct func_call : expr {
       }
       return expanded->eval(ctx);
     }
+    // fallback 0 for unknown fn
     return 0.0;
   }
   std::string to_string() const override {
@@ -462,7 +463,7 @@ struct func_call : expr {
     return std::make_unique<func_call>(name, std::move(sub_args));
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    // inline user-defined functions
+    // inline user fns
     if (c.funcs.count(name)) {
       const auto &uf = c.funcs.at(name);
       if (args.size() == uf.params.size()) {
@@ -508,7 +509,7 @@ struct deriv_node : expr {
   double eval(context &ctx) const override {
     if (!arg)
       return 0.0;
-    // Numerical differentiation: (f(x+h) - f(x-h)) / (2h)
+    // numerical diff central diff
     const double h = 1e-7;
     double original_val = 0.0;
     bool had_var = ctx.vars.count(var);
@@ -534,7 +535,12 @@ struct deriv_node : expr {
     return std::make_unique<deriv_node>(var, arg ? arg->clone() : nullptr);
   }
   std::unique_ptr<expr> derivative(const std::string &v) const override {
-    return std::make_unique<deriv_node>(v, clone());
+    if (v == var) {
+      // d/dx d/dx f = d^2/dx^2 f
+      return std::make_unique<deriv_node>(v, clone());
+    }
+    // leibniz d/dy d/dx f = d/dx d/dy f
+    return std::make_unique<deriv_node>(var, arg->derivative(v));
   }
   std::unique_ptr<expr> simplify() const override;
   std::unique_ptr<expr> substitute(const std::string &v,
@@ -565,15 +571,17 @@ struct integral : expr {
       : lower(std::move(l)), upper(std::move(u)), integrand(std::move(i)),
         var(v) {}
   double eval(context &ctx) const override {
-    if (!lower || !upper)
-      throw std::runtime_error(
-          "definite integral requires bounds for numerical evaluation");
-    double a = lower->eval(ctx);
-    double b = upper->eval(ctx);
-    if (std::abs(a - b) < 1e-12)
+    double a = 0.0;
+    if (lower)
+      a = lower->eval(ctx);
+    double b = 0.0;
+    if (upper)
+      b = upper->eval(ctx);
+
+    if (std::abs(a - b) < 1e-12 && (lower && upper))
       return 0.0;
 
-    const int n = 1000; // use simpsons rule
+    const int n = 1000; // simpson rule
     double h = (b - a) / n;
     double old_v = ctx.vars[var];
 
@@ -585,7 +593,9 @@ struct integral : expr {
     double sum = f(a) + f(b);
     for (int i = 1; i < n; i++) {
       double x = a + i * h;
-      sum += (i % 2 == 0 ? 2 : 4) * f(x);
+      double fx = f(x);
+      // std::cout << "DEBUG: f(" << x << ") = " << fx << std::endl;
+      sum += (i % 2 == 0 ? 2 : 4) * fx;
     }
 
     ctx.vars[var] = old_v;
@@ -609,7 +619,7 @@ struct integral : expr {
         integrand ? integrand->clone() : nullptr, var);
   }
   std::unique_ptr<expr> derivative(const std::string &d_var) const override {
-    // Leibniz rule: d/dx \int_{a}^{b} f(t,x) dt = f(b,x)b' - f(a,x)a' + \int
+    // leibniz rule
     // (df/dx) dt
     std::unique_ptr<expr> term1 = nullptr;
     if (upper && integrand) {
@@ -731,7 +741,7 @@ inline std::unique_ptr<expr> add::simplify() const {
     }
   }
 
-  // group like terms: aX + bX -> (a+b)X
+  // group like terms aX + bX -> (a+b)X
   struct term_group {
     std::unique_ptr<expr> sym;
     double coeff;
@@ -763,7 +773,7 @@ inline std::unique_ptr<expr> add::simplify() const {
       groups.push_back({std::move(s), c});
   }
 
-  // recombination f(y) - f(0) -> int_0^y f dx
+  // recombine f(y) - f(0) -> int_0^y f dx
   for (size_t i = 0; i < groups.size(); ++i) {
     if (std::abs(groups[i].coeff) < 1e-9)
       continue;
@@ -859,7 +869,7 @@ inline std::unique_ptr<expr> multiply::simplify() const {
     if (r->is_number())
       return std::make_unique<number>(val * *r->get_number());
 
-    // Distribute -1.0 over addition: -1 * (A + B) -> (-1 * A) + (-1 * B)
+    // distribute neg
     if (std::abs(val + 1.0) < 1e-9) {
       if (auto ra = dynamic_cast<add *>(r.get())) {
         return std::make_unique<add>(
@@ -895,9 +905,9 @@ inline std::unique_ptr<expr> multiply::simplify() const {
     }
   }
 
-  // (a * x) * (b * y) is already handled by pulling numbers out.
+  // a*x*b*y handled by pulling numbers
 
-  // fold x * x -> x^2, x^a * x^b -> x^(a+b)
+  // fold powers x*x to x^2
   auto get_base_exp = [](const expr *e, const expr *&base,
                          std::unique_ptr<expr> &exp_ptr) {
     if (auto p = dynamic_cast<const pow_node *>(e)) {
@@ -924,7 +934,7 @@ inline std::unique_ptr<expr> multiply::simplify() const {
         ->simplify();
   }
 
-  // Handle (a * x) * x -> a * x^2
+  // handle ax*x
   if (auto lm = dynamic_cast<multiply *>(l.get())) {
     const expr *b1_in;
     std::unique_ptr<expr> e1_in;
@@ -973,7 +983,7 @@ inline std::unique_ptr<expr> divide::simplify() const {
       if (li % ri == 0)
         return std::make_unique<number>(static_cast<double>(li / ri));
 
-      // Simplify fraction
+      // simplify fraction
       auto find_gcd = [](long long a, long long b) {
         a = std::abs(a);
         b = std::abs(b);
@@ -1005,17 +1015,35 @@ inline std::unique_ptr<expr>
 pow_node::derivative(const std::string &var) const {
   if (!base || !exponent)
     return nullptr;
-  // d/dx(f^g) = f^g * (g' * ln(f) + g * f' / f)
+
+  // power rule constant n
+  if (exponent->is_number()) {
+    double n = *exponent->get_number();
+    auto f = base->clone();
+    auto df = base->derivative(var);
+    if (df->is_zero())
+      return std::make_unique<number>(0);
+
+    // chain rule formula n f ^ n-1 df
+    auto term1 = std::make_unique<multiply>(
+        std::make_unique<number>(n),
+        std::make_unique<pow_node>(std::move(f),
+                                   std::make_unique<number>(n - 1.0)));
+    return std::make_unique<multiply>(std::move(term1), std::move(df))
+        ->simplify();
+  }
+
+  // general power rule f^g formula
   auto f = base->clone();
   auto g = exponent->clone();
   auto df = base->derivative(var);
   auto dg = exponent->derivative(var);
 
-  // term1: g' * ln(f)
+  // part 1 g log f
   auto term1 = std::make_unique<multiply>(
       std::move(dg), std::make_unique<func_call>("log", f->clone()));
 
-  // term2: g * f' / f
+  // part 2 g f / f
   auto term2 = std::make_unique<multiply>(
       g->clone(), std::make_unique<divide>(std::move(df), f->clone()));
 
@@ -1046,7 +1074,7 @@ func_call::derivative(const std::string &var) const {
 
   for (size_t i = 0; i < args.size(); ++i) {
     if (!args[i])
-      continue; // Added nullptr check
+      continue; // check null
     auto arg_deriv = args[i]->derivative(var);
     if (arg_deriv->is_zero())
       continue;
@@ -1148,8 +1176,8 @@ func_call::derivative(const std::string &var) const {
                                            std::make_unique<number>(2.0))));
     } else if (i == 1) {
       if (name == "atan2") {
-        // d/dx atan2(y, x) = -y / (x^2 + y^2) [wrt x]
-        // i=1 is x (in atan2(y, x))
+        // d dx atan2 wrt x
+        // i 1 is x in atan2
         auto den = std::make_unique<add>(
             std::make_unique<pow_node>(args[0]->clone(),
                                        std::make_unique<number>(2.0)),
@@ -1162,7 +1190,7 @@ func_call::derivative(const std::string &var) const {
     }
 
     if (i == 0 && name == "atan2") {
-      // d/dy atan2(y, x) = x / (x^2 + y^2) [wrt y]
+      // d dy atan2 wrt y
       // i=0 is y
       auto den = std::make_unique<add>(
           std::make_unique<pow_node>(args[0]->clone(),
@@ -1178,8 +1206,18 @@ func_call::derivative(const std::string &var) const {
     }
   }
 
-  if (partial_terms.empty())
+  if (partial_terms.empty()) {
+    // fallback to symbolic if depends on x
+    bool depends = false;
+    for (const auto &a : args)
+      if (a && !a->derivative(var)->is_zero()) {
+        depends = true;
+        break;
+      }
+    if (depends)
+      return std::make_unique<deriv_node>(var, clone());
     return std::make_unique<number>(0.0);
+  }
 
   std::unique_ptr<expr> res = std::move(partial_terms[0]);
   for (size_t i = 1; i < partial_terms.size(); ++i) {
@@ -1263,7 +1301,7 @@ inline std::unique_ptr<expr> func_call::simplify() const {
       if (name == "cos" && std::abs(v) < 1e-9)
         return std::make_unique<number>(1);
     }
-    // Handle log(e) where e is a named_constant
+    // log e check
     if (s_args.size() == 1 && (name == "log" || name == "ln")) {
       if (dynamic_cast<const named_constant *>(s_args[0].get())) {
         if (static_cast<const named_constant *>(s_args[0].get())->name == "e")
@@ -1277,7 +1315,19 @@ inline std::unique_ptr<expr> func_call::simplify() const {
 inline std::unique_ptr<expr> deriv_node::simplify() const {
   if (!arg)
     return std::make_unique<deriv_node>(var, nullptr);
-  return arg->derivative(var)->simplify();
+
+  auto simplified_arg = arg->simplify();
+  auto d = simplified_arg->derivative(var);
+
+  // stop recursion on irreducible deriv
+  if (auto next_d = dynamic_cast<const deriv_node *>(d.get())) {
+    if (next_d->arg && simplified_arg->equals(*next_d->arg) &&
+        next_d->var == var) {
+      return std::make_unique<deriv_node>(var, simplified_arg->clone());
+    }
+  }
+
+  return d->simplify();
 }
 
 inline std::unique_ptr<expr> integral::simplify() const {

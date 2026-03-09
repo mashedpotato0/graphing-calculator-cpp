@@ -1,6 +1,7 @@
 #define _USE_MATH_DEFINES
 #include "ast.hpp"
 #include "evaluator.hpp"
+#include <algorithm>
 #include <cairo.h>
 #include <cmath>
 #include <memory>
@@ -11,10 +12,12 @@ class Plotter {
 public:
   struct PlotExpr {
     std::unique_ptr<expr> ast;
-    double r = 0.96, g = 0.62, b = 0.04; // Default orange
+    double r = 0.96, g = 0.62, b = 0.04; // orange
     bool visible = true;
-    bool has_y = false; // Cache if expression depends on y
-    std::string label;  // The original expression text
+    bool has_y = false;    // if depends on y
+    bool is_polar = false; // r = f(theta)
+    double theta_min = 0, theta_max = 2 * M_PI;
+    std::string label; // orig text
   };
 
   struct PlotSettings {
@@ -28,7 +31,7 @@ public:
     bool use_radians = true;
     bool x_log_scale = false;
     bool y_log_scale = false;
-    // Optional manual step overrides (0 = auto)
+    // manual step overrides 0=auto
     double x_step = 0;
     double y_step = 0;
     std::string x_label = "";
@@ -44,11 +47,11 @@ public:
   PlotSettings settings;
 
   void render(cairo_t *cr, int width, int height, evaluator &eval) {
-    // Clear background
+    // clear bg
     cairo_set_source_rgb(cr, 0.05, 0.07, 0.1);
     cairo_paint(cr);
 
-    // Transformation functions
+    // xform fns
     auto to_screen_x = [&](double x) {
       return width / 2.0 + (x - center_x) * zoom_x;
     };
@@ -62,7 +65,7 @@ public:
       return (height / 2.0 - sy) / zoom_y + center_y;
     };
 
-    // Draw grid
+    // draw grid
     if (settings.show_grid) {
       draw_grid(cr, width, height, to_screen_x, to_screen_y, to_math_x,
                 to_math_y);
@@ -71,7 +74,7 @@ public:
     double sx0 = to_screen_x(0);
     double sy0 = to_screen_y(0);
 
-    // Draw axes
+    // draw axes
     if (settings.show_main_axis) {
       cairo_set_source_rgb(cr, 0.3, 0.4, 0.6);
       cairo_set_line_width(cr, 2.0);
@@ -88,7 +91,7 @@ public:
       }
     }
 
-    // Draw Axis Labels
+    // draw axis labels
     cairo_set_source_rgb(cr, 0.7, 0.7, 0.7);
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
                            CAIRO_FONT_WEIGHT_NORMAL);
@@ -99,14 +102,14 @@ public:
     double y_start = to_math_y(height);
     double y_end = to_math_y(0);
 
-    // X axis labels
+    // x axis labels
     if (settings.show_axis_numbers) {
       double step_x =
           (settings.x_step > 0) ? settings.x_step : get_grid_step(zoom_x);
       for (double x = std::floor(x_start / step_x) * step_x; x <= x_end;
            x += step_x) {
         if (std::abs(x) < 1e-9)
-          continue; // Skip zero
+          continue; // skip zero
         double sx = to_screen_x(x);
         char buf[32];
         int precision = 0;
@@ -131,14 +134,14 @@ public:
       }
     }
 
-    // Y axis labels
+    // y axis labels
     if (settings.show_axis_numbers) {
       double step_y =
           (settings.y_step > 0) ? settings.y_step : get_grid_step(zoom_y);
       for (double y = std::floor(y_start / step_y) * step_y; y <= y_end;
            y += step_y) {
         if (std::abs(y) < 1e-9)
-          continue; // Skip zero
+          continue; // skip zero
         double sy = to_screen_y(y);
         char buf[32];
         int precision = 0;
@@ -163,7 +166,7 @@ public:
       }
     }
 
-    // Draw Axis Labels (X-Label / Y-Label)
+    // draw axis labels (x-label / y-label)
     if (!settings.x_label.empty()) {
       cairo_move_to(cr, width - 50, sy0 - 10);
       cairo_show_text(cr, settings.x_label.c_str());
@@ -173,11 +176,11 @@ public:
       cairo_show_text(cr, settings.y_label.c_str());
     }
 
-    // Draw Arrows
+    // draw arrows
     if (settings.show_arrows) {
       cairo_set_source_rgb(cr, 0.3, 0.4, 0.6);
       if (sx0 >= 0 && sx0 <= width) {
-        // Top arrow
+        // top arrow
         cairo_move_to(cr, sx0, 0);
         cairo_line_to(cr, sx0 - 5, 10);
         cairo_move_to(cr, sx0, 0);
@@ -185,7 +188,7 @@ public:
         cairo_stroke(cr);
       }
       if (sy0 >= 0 && sy0 <= height) {
-        // Right arrow
+        // right arrow
         cairo_move_to(cr, width, sy0);
         cairo_line_to(cr, width - 10, sy0 - 5);
         cairo_move_to(cr, width, sy0);
@@ -194,7 +197,7 @@ public:
       }
     }
 
-    // Draw functions
+    // draw fns
     for (const auto &pe : expressions) {
       if (!pe.visible || !pe.ast)
         continue;
@@ -203,9 +206,8 @@ public:
       cairo_set_line_width(cr, 2.0);
 
       if (pe.has_y) {
-        // Implicit plotting using a simple grid approach (Marching Squares
-        // Light)
-        const int GRID_SIZE = 1; // pixel step
+        // implicit plot marching squares light
+        const int GRID_SIZE = 1; // px step
         for (int i = 0; i < width; i += GRID_SIZE) {
           for (int j = 0; j < height; j += GRID_SIZE) {
             double x1 = to_math_x(i);
@@ -228,7 +230,7 @@ public:
             double v21 = eval_at(x2, y1);
             double v22 = eval_at(x2, y2);
 
-            // Better sign change check (check all 4 edges)
+            // sign change check all 4 edges
             bool s11 = v11 > 0;
             bool s12 = v12 > 0;
             bool s21 = v21 > 0;
@@ -238,6 +240,39 @@ public:
               cairo_move_to(cr, i, j);
               cairo_line_to(cr, i + GRID_SIZE, j + GRID_SIZE);
             }
+          }
+        }
+        cairo_stroke(cr);
+      } else if (pe.is_polar) {
+        // polar r = f(theta)
+        bool first = true;
+        // adaptive res 100 step/rad min 500 max 10000
+        double theta_range = std::abs(pe.theta_max - pe.theta_min);
+        double steps = std::clamp(theta_range * 100.0, 500.0, 10000.0);
+        double d_theta = (pe.theta_max - pe.theta_min) / steps;
+
+        for (int i = 0; i <= (int)steps; ++i) {
+          double theta = pe.theta_min + i * d_theta;
+          eval.set_var("theta", theta);
+          try {
+            double r = eval.eval(*pe.ast);
+            if (std::isfinite(r)) {
+              double x = r * std::cos(theta);
+              double y = r * std::sin(theta);
+              double sx = to_screen_x(x);
+              double sy = to_screen_y(y);
+
+              if (first) {
+                cairo_move_to(cr, sx, sy);
+                first = false;
+              } else {
+                cairo_line_to(cr, sx, sy);
+              }
+            } else {
+              first = true;
+            }
+          } catch (...) {
+            first = true;
           }
         }
         cairo_stroke(cr);
@@ -252,10 +287,8 @@ public:
             if (std::isfinite(y)) {
               double sy = to_screen_y(y);
 
-              // Discontinuity detection:
-              // If the jump in y is very large AND the sign changes, it's
-              // likely a pole (like tan(x)). We skip drawing the connecting
-              // line in this case.
+              // discontinuity check e.g. tanx skip line if jump big and sign
+              // flip
               bool is_discontinuous =
                   !first && (std::abs(y - prev_y) > (height / zoom_y) * 10.0) &&
                   ((y > 0) != (prev_y > 0));
@@ -277,14 +310,14 @@ public:
         cairo_stroke(cr);
       }
 
-      // Render Label nearby
+      // draw label nearby
       if (!pe.label.empty()) {
         double lx = 0, ly = 0;
         bool found = false;
 
-        // Try to find the rightmost visible point
+        // find rightmost visible point
         if (pe.has_y) {
-          // For implicit plots, maybe just pick a point on screen
+          // implicit plot pick point on screen
           lx = width - 80;
           ly = height - (40 + (&pe - &expressions[0]) * 20);
           found = true;
@@ -326,7 +359,7 @@ public:
 
 private:
   double get_grid_step(double zoom) {
-    double pixels_per_step = 80.0; // Desired pixels between major grid lines
+    double pixels_per_step = 80.0; // desired px between grid lines
     double ideal_step = pixels_per_step / zoom;
 
     double log_step = std::log10(ideal_step);
@@ -361,7 +394,7 @@ private:
     double step_x = get_grid_step(zoom_x);
     double step_y = get_grid_step(zoom_y);
 
-    // X-grid
+    // x grid
     for (double x = std::floor(x_start / step_x) * step_x; x <= x_end;
          x += step_x) {
       double sx = to_screen_x(x);
@@ -369,7 +402,7 @@ private:
       cairo_line_to(cr, sx, height);
       cairo_stroke(cr);
     }
-    // Y-grid
+    // y grid
     for (double y = std::floor(y_start / step_y) * step_y; y <= y_end;
          y += step_y) {
       double sy = to_screen_y(y);
@@ -378,7 +411,7 @@ private:
       cairo_stroke(cr);
     }
 
-    // Minor gridlines
+    // minor gridlines
     if (settings.show_minor_gridlines) {
       cairo_set_source_rgba(cr, 0.1, 0.15, 0.25, 0.4);
       double mstep_x = step_x / 5.0;

@@ -1,17 +1,4 @@
-// supports:
-//   f(x) = sin(x) + x^2          define user function
-//   a(x,y,z) = x^2 + y^2 + z     multi-param user function
-//   eval \sin{x}                  evaluate with current variable bindings
-//   diff \sin{x} wrt x            symbolic differentiation
-//   integrate \sin{x} wrt x       symbolic integration
-//   set x 3.14159                 set a variable
-//   funcs                         list user functions
-//   vars                          list current variables
-//   clear                         clear state
-//   help                          show help
-//   exit / quit                   exit
-// build: g++ -std=c++17 -O2 main_repl.cpp lexer.cpp parser.cpp integrator.cpp
-// -o symcalc
+// build cmd
 
 #include "ast.hpp"
 #include "ast_ext.hpp"
@@ -29,7 +16,7 @@
 #include <string>
 #include <vector>
 
-// ansi colors
+// colors
 namespace col {
 const char *rst = "\001\033[0m\002";
 const char *bold = "\001\033[1m\002";
@@ -64,7 +51,7 @@ static std::unique_ptr<expr> parse_expr_str(const std::string &s,
   return tree;
 }
 
-// inline user-defined function calls
+// user fn inline logic
 
 static void print_sep(const char *c = "─", int w = 60) {
   std::cout << col::dim;
@@ -105,9 +92,9 @@ static void print_help() {
   print_sep();
 }
 
-// command dispatch
+// dispatch commands
 
-// recursively substitute user functions
+// inline user funcs
 static std::unique_ptr<expr> inline_user_funcs(std::unique_ptr<expr> e,
                                                const function_registry &reg) {
   if (!e)
@@ -124,7 +111,7 @@ static std::unique_ptr<expr> inline_user_funcs(std::unique_ptr<expr> e,
         return inline_user_funcs(std::move(body), reg);
       }
     } else {
-      // inline arguments for non-user functions
+      // inline args non user fns
       std::vector<std::unique_ptr<expr>> inlined_args;
       for (const auto &a : fc->args) {
         inlined_args.push_back(inline_user_funcs(a->clone(), reg));
@@ -257,7 +244,7 @@ static bool try_func_define(const std::string &line, function_registry &reg,
   return true;
 }
 
-// repl loop
+// main repl loop
 
 int main() {
   function_registry reg;
@@ -369,11 +356,11 @@ int main() {
       }
     }
 
-    // function definition: f(x) = ...
+    // fn define f(x) = ...
     if (try_func_define(line, reg, ev.ctx))
       continue;
 
-    // fallback: try to evaluate directly
+    // fallback eval direct
     cmd_eval(line, ev);
   }
   return 0;

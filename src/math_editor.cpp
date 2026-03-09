@@ -93,7 +93,7 @@ RenderMetrics MathPower::measure(cairo_t *cr, double font_size) {
 
   last_metrics.width = exp.width + 1;
   last_metrics.ascent = exp.height() + font_size * 0.5;
-  last_metrics.descent = 0; // minimal descent
+  last_metrics.descent = 0; // min descent
   last_metrics.scale = 1.0;
   return last_metrics;
 }
@@ -110,7 +110,7 @@ std::string MathPower::to_string() const {
   return "^{" + exponent->to_string() + "}";
 }
 
-// MathSqrt
+// sqrt
 MathSqrt::MathSqrt() {
   content = std::make_unique<MathBox>();
   content->parent_node = this;
@@ -119,7 +119,7 @@ MathSqrt::~MathSqrt() = default;
 
 RenderMetrics MathSqrt::measure(cairo_t *cr, double font_size) {
   auto m = content->measure(cr, font_size);
-  last_metrics.width = m.width + font_size * 0.7; // room for radical
+  last_metrics.width = m.width + font_size * 0.7; // radical room
   last_metrics.ascent = m.ascent + 4;
   last_metrics.descent = m.descent;
   last_metrics.scale = 1.0;
@@ -130,7 +130,7 @@ void MathSqrt::draw(cairo_t *cr, double x, double y, double font_size) {
   last_x = x;
   last_y = y;
 
-  // Draw radical
+  // radical
   cairo_set_line_width(cr, 1.2);
   double h = last_metrics.ascent + last_metrics.descent;
   double top = y - last_metrics.ascent;
@@ -148,7 +148,7 @@ std::string MathSqrt::to_string() const {
   return "sqrt(" + content->to_string() + ")";
 }
 
-// MathIntegral
+// int
 MathIntegral::MathIntegral() {
   lower = std::make_unique<MathBox>();
   lower->parent_node = this;
@@ -161,7 +161,7 @@ RenderMetrics MathIntegral::measure(cairo_t *cr, double font_size) {
   auto lo = lower->measure(cr, sf);
   auto up = upper->measure(cr, sf);
 
-  // integral symbol width
+  // int sym width
   double sym_w = font_size * 0.55;
   double bound_w = std::max(lo.width, up.width);
   last_metrics.width = sym_w + bound_w + 2;
@@ -175,7 +175,7 @@ void MathIntegral::draw(cairo_t *cr, double x, double y, double font_size) {
   last_x = x;
   last_y = y;
 
-  // Draw ∫ symbol
+  // int sym
   cairo_set_font_size(cr, font_size * 1.5);
   cairo_move_to(cr, x, y + font_size * 0.3);
   cairo_show_text(cr, "\u222b");
@@ -183,9 +183,9 @@ void MathIntegral::draw(cairo_t *cr, double x, double y, double font_size) {
   double sym_w = font_size * 0.55;
   double sf = font_size * 0.55;
 
-  // upper bound (superscript) — top right of ∫
+  // up bound top right of int
   upper->draw(cr, x + sym_w, y - font_size * 0.7, sf);
-  // lower bound (subscript) — bottom right of ∫
+  // lo bound bot right of int
   lower->draw(cr, x + sym_w, y + font_size * 0.3, sf);
 }
 
@@ -203,11 +203,11 @@ std::string MathIntegral::to_string() const {
   return s;
 }
 
-// MathBox
+// box
 RenderMetrics MathBox::measure(cairo_t *cr, double font_size) {
   if (nodes.empty()) {
     last_metrics = measure_text(cr, " ", font_size);
-    last_metrics.width = 0; // small placeholder
+    last_metrics.width = 0; // placeholder
     return last_metrics;
   }
 
@@ -254,7 +254,7 @@ void MathBox::remove(int index) {
   }
 }
 
-// MathEditor
+// editor
 MathEditor::MathEditor() {
   active_box = &root;
   cursor_index = 0;
@@ -272,7 +272,7 @@ void MathEditor::insert_char(const std::string &c) {
     bool is_sqrt = false;
   };
   static const std::vector<Keyword> keywords = {
-      {"int", "\u222b", "\\int ", true}, // structural integral
+      {"int", "\u222b", "\\int ", true}, // struct int
       {"sum", "\u2211", "\\sum "},
       {"prod", "\u220f", "\\prod "},
       {"pi", "\u03c0", "\\pi "},
@@ -305,8 +305,7 @@ void MathEditor::insert_char(const std::string &c) {
         }
         cursor_index -= len;
         if (kw.is_integral) {
-          // Insert structural MathIntegral node
-          auto integ = std::make_unique<MathIntegral>();
+          // insert struct int node
           active_box->insert(cursor_index, std::move(integ));
           cursor_index++;
         } else if (kw.is_sqrt) {
@@ -322,13 +321,20 @@ void MathEditor::insert_char(const std::string &c) {
   }
 }
 
+void MathEditor::set_expression(const std::string &s) {
+  clear();
+  for (char c : s) {
+    insert_char(std::string(1, c));
+  }
+}
+
 void MathEditor::insert_fraction() {
   auto frac = std::make_unique<MathFraction>();
   auto frac_ptr = frac.get();
 
   if (cursor_index > 0) {
     int start_idx = cursor_index - 1;
-    // If before cursor is ')', capture balanced range
+    // if ) cap balanced range
     if (active_box->nodes[cursor_index - 1]->to_string() == ")") {
       int depth = 0;
       for (int i = cursor_index - 1; i >= 0; --i) {
@@ -344,7 +350,7 @@ void MathEditor::insert_fraction() {
         }
       }
     } else {
-      // Find contiguous alphanumeric block
+      // find alpha block
       for (int i = cursor_index - 1; i >= 0; --i) {
         std::string s = active_box->nodes[i]->to_string();
         if (s.empty() || (!std::isalnum(s[0]) && s[0] != '_')) {
@@ -385,8 +391,8 @@ void MathEditor::insert_integral() {
   auto integ_ptr = integ.get();
   active_box->insert(cursor_index, std::move(integ));
   cursor_index++;
-  // Cursor stays in main box for now; user presses _ to jump into lower bound
-  (void)integ_ptr; // suppress warning; navigation handled by move_*
+  // cursor in main box use underscore to jump to lo bound
+  (void)integ_ptr; // suppress warn
 }
 
 void MathEditor::backspace() {
@@ -424,54 +430,54 @@ void MathEditor::backspace() {
   }
 }
 
-void MathEditor::insert_sqrt() {
-  auto sqrt_node = std::make_unique<MathSqrt>();
-  auto sqrt_ptr = sqrt_node.get();
+// nav logic below
+auto sqrt_node = std::make_unique<MathSqrt>();
+auto sqrt_ptr = sqrt_node.get();
 
-  if (cursor_index > 0) {
-    int start_idx = cursor_index - 1;
-    if (active_box->nodes[cursor_index - 1]->to_string() == ")") {
-      int depth = 0;
-      for (int i = cursor_index - 1; i >= 0; --i) {
-        std::string s = active_box->nodes[i]->to_string();
-        if (s == ")")
-          depth++;
-        else if (s == "(") {
-          depth--;
-          if (depth == 0) {
-            start_idx = i;
-            break;
-          }
-        }
-      }
-    } else {
-      for (int i = cursor_index - 1; i >= 0; --i) {
-        std::string s = active_box->nodes[i]->to_string();
-        if (!s.empty() && (std::isalnum(s[0]) || s[0] == '_' || s[0] == '.')) {
+if (cursor_index > 0) {
+  int start_idx = cursor_index - 1;
+  if (active_box->nodes[cursor_index - 1]->to_string() == ")") {
+    int depth = 0;
+    for (int i = cursor_index - 1; i >= 0; --i) {
+      std::string s = active_box->nodes[i]->to_string();
+      if (s == ")")
+        depth++;
+      else if (s == "(") {
+        depth--;
+        if (depth == 0) {
           start_idx = i;
-        } else {
           break;
         }
       }
     }
-
-    int count = cursor_index - start_idx;
-    if (count > 0) {
-      for (int i = 0; i < count; ++i) {
-        sqrt_ptr->content->nodes.push_back(
-            std::move(active_box->nodes[start_idx]));
-        active_box->nodes.erase(active_box->nodes.begin() + start_idx);
+  } else {
+    for (int i = cursor_index - 1; i >= 0; --i) {
+      std::string s = active_box->nodes[i]->to_string();
+      if (!s.empty() && (std::isalnum(s[0]) || s[0] == '_' || s[0] == '.')) {
+        start_idx = i;
+      } else {
+        break;
       }
-      for (auto &n : sqrt_ptr->content->nodes) {
-        n->parent_box = sqrt_ptr->content.get();
-      }
-      cursor_index = start_idx;
     }
   }
 
-  active_box->insert(cursor_index, std::move(sqrt_node));
-  active_box = sqrt_ptr->content.get();
-  cursor_index = active_box->nodes.size();
+  int count = cursor_index - start_idx;
+  if (count > 0) {
+    for (int i = 0; i < count; ++i) {
+      sqrt_ptr->content->nodes.push_back(
+          std::move(active_box->nodes[start_idx]));
+      active_box->nodes.erase(active_box->nodes.begin() + start_idx);
+    }
+    for (auto &n : sqrt_ptr->content->nodes) {
+      n->parent_box = sqrt_ptr->content.get();
+    }
+    cursor_index = start_idx;
+  }
+}
+
+active_box->insert(cursor_index, std::move(sqrt_node));
+active_box = sqrt_ptr->content.get();
+cursor_index = active_box->nodes.size();
 }
 
 void MathEditor::delete_forward() {
@@ -645,7 +651,7 @@ void MathEditor::measure_and_update_cursor(cairo_t *cr, double x, double y,
   (void)x;
   (void)y;
 
-  // Use local font size for height calculation
+  // local font for height calculation
   double effective_font_size = font_size * active_box->last_metrics.scale;
 
   if (active_box->nodes.empty()) {
@@ -666,13 +672,12 @@ void MathEditor::measure_and_update_cursor(cairo_t *cr, double x, double y,
 }
 
 static MathBox *hit_test(MathBox *box, double x, double y, int &idx) {
-  // Check if (x,y) is near this box's vertical range, or just find the best box
-  // Recursively check children
+  // recurse kids
   for (size_t i = 0; i < box->nodes.size(); ++i) {
     auto &n = box->nodes[i];
     if (n->is_fraction()) {
       auto fr = static_cast<MathFraction *>(n.get());
-      // Very simple hit test for num/den
+      // hit test num den
       if (y < fr->last_y - 2) {
         auto b = hit_test(fr->numerator.get(), x, y, idx);
         if (b)
@@ -710,7 +715,7 @@ static MathBox *hit_test(MathBox *box, double x, double y, int &idx) {
     }
   }
 
-  // If no child box hit, it's this box. Find index.
+  // no child hit find idx
   if (box->nodes.empty()) {
     idx = 0;
     return box;
@@ -745,14 +750,13 @@ void MathEditor::draw(cairo_t *cr, double x, double y, double font_size) {
   root.draw(cr, x, y, font_size);
   measure_and_update_cursor(cr, x, y, font_size);
 
-  // Check if drawing area is active/focused?
-  // We can blink cursor if needed
+  // blink cursor if needed
   static int blink_counter = 0;
   blink_counter++;
   if ((blink_counter / 20) % 2 == 0) {
     cairo_set_source_rgb(cr, 0.8, 0.8, 0.8);
     cairo_set_line_width(cr, 1.5);
-    cairo_move_to(cr, cursor_x, cursor_y); // baseline? cursor_y is adjusted
+    cairo_move_to(cr, cursor_x, cursor_y); // baseline cursor_y adjusted
     cairo_line_to(cr, cursor_x, cursor_y + cursor_height);
     cairo_stroke(cr);
   }

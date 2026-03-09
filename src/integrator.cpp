@@ -58,7 +58,7 @@ static std::unique_ptr<expr> add_e(std::unique_ptr<expr> l,
                                    std::unique_ptr<expr> r) {
   return std::make_unique<add>(std::move(l), std::move(r));
 }
-// subtraction is just a + -1*b
+// a - b is a + -1*b
 static std::unique_ptr<expr> sub_e(std::unique_ptr<expr> l,
                                    std::unique_ptr<expr> r) {
   return add_e(std::move(l), mul(num(-1.0), std::move(r)));
@@ -105,10 +105,10 @@ static bool contains_var(const expr &e, const std::string &var) {
   return false;
 }
 
-// gets numeric value if it's a literal or named constant
+// get numeric value
 static std::optional<double> num_val(const expr &e) { return e.get_number(); }
 
-// extracts coeff and power from k*x^n. returns false if not monomial
+// extract coeff and power from k*x^n
 static bool extract_monomial(const expr &e, const std::string &var,
                              double &coeff, double &power) {
   if (auto n = dynamic_cast<const number *>(&e)) {
@@ -146,13 +146,12 @@ static bool extract_monomial(const expr &e, const std::string &var,
   return false;
 }
 
-// eval constant expression to a number
+// eval const to num
 static std::unique_ptr<expr> eval_const(const expr &e, const std::string &var) {
   context ctx;
   ctx.builtins["sin"] = ctx.builtins["cos"] = ctx.builtins["tan"] =
       ctx.builtins["exp"] = ctx.builtins["log"] = ctx.builtins["ln"] =
-          ctx.builtins["sqrt"] =
-              [](double x) { return x; }; // dummy for const expr
+          ctx.builtins["sqrt"] = [](double x) { return x; }; // dummy for const
   ctx.builtins["sin"] = [](double x) { return std::sin(x); };
   ctx.builtins["cos"] = [](double x) { return std::cos(x); };
   ctx.builtins["tan"] = [](double x) { return std::tan(x); };
@@ -190,7 +189,7 @@ static bool is_const_in(const expr &e, const std::string &var) {
   return true;
 }
 
-// simplify fractions like (a/b)*(c/d) to (ac)/(bd)
+// simplify fractions product
 static std::unique_ptr<expr> flatten_frac_product(const expr &e) {
   auto m = dynamic_cast<const multiply *>(&e);
   if (!m)
@@ -310,7 +309,7 @@ find_roots_dk(const std::map<int, double> &coeffs) {
   return R;
 }
 
-// liate order: log, invtrig, algebraic, trig, exp
+// liate order: log invtrig algebraic trig exp
 static int liate(const expr &e, const std::string & /*var*/) {
   if (auto f = dynamic_cast<const func_call *>(&e)) {
     const auto &n = f->name;
@@ -334,8 +333,7 @@ static int liate(const expr &e, const std::string & /*var*/) {
   return 5;
 }
 
-// dispatcher
-
+// dispatch rules in order
 std::unique_ptr<expr> integrate(const expr &e, const std::string &var,
                                 int depth) {
   if (depth > 8)
@@ -360,7 +358,7 @@ std::unique_ptr<expr> integrate(const expr &e, const std::string &var,
   TRY(try_hyperbolic_rule(*s, var));
   TRY(try_inverse_hyperbolic_rule(*s, var));
   TRY(try_chain_patterns(*s, var));
-  // reduce monomials before substitution
+  // reduce monomials before sub
   if (auto dv = dynamic_cast<const divide *>(s.get())) {
     double nc, np, dc, dp;
     if (extract_monomial(*dv->left, var, nc, np) &&
@@ -380,7 +378,7 @@ std::unique_ptr<expr> integrate(const expr &e, const std::string &var,
   return nullptr;
 }
 
-// tier 1: structural and linearity
+// tier 1 structural linearity
 
 // constant rule
 static std::unique_ptr<expr> try_constant_rule(const expr &e,
@@ -397,17 +395,13 @@ static std::unique_ptr<expr> try_sum_rule(const expr &e, const std::string &var,
     if (!a->left || !a->right)
       return nullptr;
     auto l = integrate(*a->left, var, depth);
+    if (!l)
+      return nullptr;
     auto r = integrate(*a->right, var, depth);
+    if (!r)
+      return nullptr;
 
-    if (l || r) {
-      auto left_res = l ? std::move(l)
-                        : std::make_unique<integral>(nullptr, nullptr,
-                                                     a->left->clone(), var);
-      auto right_res = r ? std::move(r)
-                         : std::make_unique<integral>(nullptr, nullptr,
-                                                      a->right->clone(), var);
-      return add_e(std::move(left_res), std::move(right_res));
-    }
+    return add_e(std::move(l), std::move(r));
   }
   return nullptr;
 }
@@ -440,7 +434,7 @@ try_constant_multiple_rule(const expr &e, const std::string &var, int depth) {
   return nullptr;
 }
 
-// tier 2: closed-form patterns
+// tier 2 closed form patterns
 
 // power rule
 static std::unique_ptr<expr> try_power_rule(const expr &e,
@@ -509,10 +503,10 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
 
     double disc = b * b - 4 * a * c;
     if (std::abs(disc) < 1e-9) {
-      // D = 0: (mx+n)/(a(x-r)^2) = A/(x-r) + B/(x-r)^2
+      // d = 0 pfd case
       // r = -b/2a
       // mx+n = A(x-r) + B = Ax + (B-Ar)
-      // A = m/a, B = (n + m*r)/a
+      // a = m/a b = n+mr/a
       double r = -b / (2.0 * a);
       double A = m / a;
       double B = (n + m * r) / a;
@@ -524,10 +518,10 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
         return t1;
       return add_e(std::move(t1), std::move(t2));
     } else if (disc > 1e-9) {
-      // D > 0: Pure PFD
+      // d > 0 pure pfd
       double r1 = (-b + std::sqrt(disc)) / (2.0 * a);
       double r2 = (-b - std::sqrt(disc)) / (2.0 * a);
-      // A = P(r1)/Q'(r1), B = P(r2)/Q'(r2)
+      // a = pr1/qp r1 b = pr2/qp r2
       double A = (m * r1 + n) / (2.0 * a * r1 + b);
       double B = (m * r2 + n) / (2.0 * a * r2 + b);
       auto t1 = mul(to_exact_expr(A),
@@ -536,7 +530,7 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
                     func("log", sub_e(var_node(var), to_exact_expr(r2))));
       return add_e(std::move(t1), std::move(t2));
     } else {
-      // D < 0: mx+n = (m/2a)(2ax+b) + (n-mb/2a)
+      // d < 0 arc tan log part
       auto log_part =
           mul(to_exact_expr(m / (2.0 * a)), func("log", d->right->clone()));
       double rem_n = n - (m * b) / (2.0 * a);
@@ -558,13 +552,13 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
   }
 
   if (deg_n >= deg_d) {
-    // Polynomial division: P/Q = S + R/Q
-    // We only handle simple cases for now to avoid complexity
+    // poly div P/Q = S + R/Q
+    // simple cases only
     if (deg_d == 2 && deg_n == 2) {
       double a = den_p[2], b = den_p[1], c = den_p[0];
       double m = num_p[2], n = num_p[1], l = num_p[0];
       double quot = m / a;
-      // R = P - quot*Q = (m-quot*a)x^2 + (n-quot*b)x + (l-quot*c)
+      // r = p minus quot q
       double r1 = n - quot * b;
       double r0 = l - quot * c;
       auto term1 = mul(num(quot), var_node(var));
@@ -628,18 +622,18 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
   if (deg_d == 3) {
     double a = den_p[3], b = den_p[2], c = den_p[1], d_const = den_p[0];
     if (std::abs(d_const) < 1e-9 && std::abs(c) > 1e-9) {
-      // Q(x) = x(ax^2 + bx + c).
-      // If factorable, use pure PFD.
+      // qx is x ax2 bx c
+      // use pfd if factorable
       double disc = b * b - 4 * a * c;
       double m = num_p[2], n = num_p[1], l = num_p[0];
 
       if (disc > 1e-9) {
         double r1 = (-b + std::sqrt(disc)) / (2.0 * a);
         double r2 = (-b - std::sqrt(disc)) / (2.0 * a);
-        // A/x + B/(x-r1) + C/(x-r2)
-        // A = P(0)/(a*(-r1)*(-r2)) = P(0)/c
-        // B = P(r1)/(r1 * a * (r1-r2))
-        // C = P(r2)/(r2 * a * (r2-r1))
+        // pfd terms
+        // a is p0 c
+        // b is pr1 r1 a r1 r2
+        // c is pr2 r2 a r2 r1
         double A = l / c;
         double B = (m * r1 * r1 + n * r1 + l) / (r1 * a * (r1 - r2));
         double C = (m * r2 * r2 + n * r2 + l) / (r2 * a * (r2 - r1));
@@ -650,7 +644,7 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
             mul(to_exact_expr(C),
                 func("log", sub_e(var_node(var), to_exact_expr(r2)))));
       } else {
-        // Fallback to A/x + (Bx+C)/(ax^2+bx+c)
+        // fallback to A/x + (Bx+C)/(ax^2+bx+c)
         double A = l / c;
         double B_coeff = m - (l * a) / c;
         double C_coeff = n - (l * b) / c;
@@ -691,8 +685,7 @@ static std::unique_ptr<expr> try_exp_rule(const expr &e,
             return mul(num(1.0 / a), func("exp", p->exponent->clone()));
         }
         if (auto bv = num_val(*p->base)) {
-          if (std::abs(*bv - 2.718281828459045) <
-              1e-9) // fallback for e as number
+          if (std::abs(*bv - 2.718281828459045) < 1e-9) // fallback for e as num
             return mul(num(1.0 / a), func("exp", p->exponent->clone()));
           return div_e(e.clone(), num(a * std::log(*bv)));
         }

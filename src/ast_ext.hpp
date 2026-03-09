@@ -30,7 +30,6 @@ static inline const std::map<std::string, double> &builtin_constants() {
       {"beta", 0.0},
       {"gamma", 0.0},
       {"delta", 0.0},
-      {"theta", 0.0},
       {"omega", 0.0},
       {"zeta", 0.0},
       {"eta", 0.0},

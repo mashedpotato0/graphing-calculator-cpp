@@ -1,11 +1,5 @@
 #pragma once
-// function_registry.hpp multi-parameter user functions
-//
-// usage
-//   function_registry reg;
-//   reg.define_from_string("f(x) = sin(x) + x^2");
-//   reg.define_from_string("a(x,y,z) = x^2 + y^2 + z");
-//   double val = reg.call_numeric("f", {M_PI/2}, ctx);
+// multi param user fns
 
 #include "ast.hpp"
 #include "lexer.hpp"
@@ -22,7 +16,7 @@ struct user_func_def {
   std::string name;
   std::vector<std::string> params;
   std::shared_ptr<expr> body;
-  std::string source; // original definition string
+  std::string source; // orig def
 };
 
 class function_registry {
@@ -36,9 +30,9 @@ public:
     funcs[name] = {name, params, std::move(body), src};
   }
 
-  // parses and registers a string like "f(x) = sin(x) + x^2"
+  // var bindings f(x) = ...
   bool define_from_string(const std::string &def_str, std::string &error) {
-    // find parenthesis and equal sign
+    // find paren and eq
     auto lp = def_str.find('(');
     auto rp = def_str.find(')');
     auto eq = def_str.find('=', rp != std::string::npos ? rp : 0);
@@ -94,7 +88,7 @@ public:
 
   // symbolic call
 
-  // returns body with substituted params
+  // sub params simplify
   std::unique_ptr<expr>
   call_symbolic(const std::string &name,
                 const std::vector<std::unique_ptr<expr>> &args) const {
@@ -120,7 +114,7 @@ public:
     if (args.size() != def->params.size())
       throw std::runtime_error("Wrong arg count for " + name);
 
-    // bind params in local context
+    // bind params
     context local = ctx;
     for (size_t i = 0; i < def->params.size(); ++i)
       local.vars[def->params[i]] = args[i];
@@ -128,14 +122,14 @@ public:
     return def->body->eval(local);
   }
 
-  // management
+  // manage
 
   void remove(const std::string &name) { funcs.erase(name); }
   void clear() { funcs.clear(); }
 
   void list() const {
     if (funcs.empty()) {
-      std::cout << "  (no user functions)\n";
+      std::cout << "  // user fns\n";
       return;
     }
     for (auto &[name, def] : funcs) {
@@ -143,7 +137,7 @@ public:
     }
   }
 
-  // install user functions into builtins
+  // install into builtins
   void install_into(context &ctx) const {
     for (auto &[name, def] : funcs) {
       if (def.params.size() == 1) {
