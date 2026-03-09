@@ -1,6 +1,6 @@
 # Graphing & Visualization Guide
 
-This guide explains the graphing subsystem, its architecture, and how to use it across different platforms.
+This guide explains the graphing subsystem, its architecture, and how to use it across different platforms. 
 
 ## Architecture
 
