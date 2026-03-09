@@ -1,6 +1,7 @@
 # Build artifacts
 calc
 repl
+viewer
 repl_test
 quick_test
 reproduce_crash.cpp
