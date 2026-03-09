@@ -1,6 +1,9 @@
 #pragma once
-#include <algorithm>
 #include <cmath>
+#ifndef M_E
+#define M_E std::exp(1)
+#endif
+#include <algorithm>
 #include <functional>
 #include <iomanip>
 #include <map>
