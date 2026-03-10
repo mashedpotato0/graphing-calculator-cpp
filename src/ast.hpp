@@ -18,7 +18,7 @@ struct context;
 struct expr;
 
 namespace symbolic {
-// symbolic int entry point
+// symbolic integration entry point
 std::unique_ptr<expr> integrate(const expr &e, const std::string &var,
                                 int depth = 0);
 } // namespace symbolic
@@ -181,8 +181,7 @@ struct add : expr {
     std::string l = left ? left->to_string() : "?";
     std::string r = right ? right->to_string() : "?";
     if (right && right->is_negative()) {
-      // if r neg it might start with - or \frac{-...
-      // if mult -1*x starts with -
+      // if r is negative it might start with - or \frac{-
       return "(" + l + r + ")";
     }
     // check if r starts with - from multiply to_string
@@ -244,8 +243,8 @@ struct multiply : expr {
     auto l_str = (left ? left->to_string() : "?");
     auto r_str = (right ? right->to_string() : "?");
 
-    // implicit mult: num/var before var/brace/fn, or product ending in var
-    // before brace/fn
+    // implicit multiplication: number or variable before variable, brace, or
+    // function
     if (left && right) {
       bool l_simple =
           left->is_number() || dynamic_cast<const variable *>(left.get());
@@ -291,7 +290,7 @@ struct multiply : expr {
     if (!el || !er)
       return std::make_unique<multiply>(std::move(el), std::move(er));
 
-    // distribute: (a+b)*c = ac + bc
+    // distribute a+b*c = ac + bc
     if (auto la = dynamic_cast<add *>(el.get())) {
       return std::make_unique<add>(
                  std::make_unique<multiply>(la->left->clone(), er->clone())
@@ -300,7 +299,7 @@ struct multiply : expr {
                      ->expand(c))
           ->simplify();
     }
-    // distribute: a*(b+c) = ab + ac
+    // distribute a*b+c = ab + ac
     if (auto ra = dynamic_cast<add *>(er.get())) {
       return std::make_unique<add>(
                  std::make_unique<multiply>(el->clone(), ra->left->clone())
@@ -436,13 +435,13 @@ struct func_call : expr {
       : name(n), args(std::move(as)) {}
 
   double eval(context &ctx) const override {
-    if (ctx.builtins.count(name)) { // builtin logic
+    if (ctx.builtins.count(name)) { // builtin function logic
       if (args.empty() || !args[0])
         return 0.0;
       double val = args[0]->eval(ctx);
       return ctx.builtins[name](val);
     }
-    // substitute args into body and eval
+    // substitute arguments into body and evaluate
     if (ctx.funcs.count(name)) {
       const auto &uf = ctx.funcs.at(name);
       if (args.size() != uf.params.size())
@@ -454,7 +453,7 @@ struct func_call : expr {
       }
       return expanded->eval(ctx);
     }
-    // fallback 0 for unknown fn
+    // fallback 0 for unknown function
     return 0.0;
   }
   std::string to_string() const override {
@@ -486,7 +485,7 @@ struct func_call : expr {
     return std::make_unique<func_call>(name, std::move(sub_args));
   }
   std::unique_ptr<expr> expand(const context &c) const override {
-    // inline user fns
+    // inline user functions
     if (c.funcs.count(name)) {
       const auto &uf = c.funcs.at(name);
       if (args.size() == uf.params.size()) {
@@ -532,7 +531,7 @@ struct deriv_node : expr {
   double eval(context &ctx) const override {
     if (!arg)
       return 0.0;
-    // numerical diff central diff
+    // numerical differentiation using central difference
     const double h = 1e-7;
     double original_val = 0.0;
     bool had_var = ctx.vars.count(var);
@@ -562,7 +561,7 @@ struct deriv_node : expr {
       // d/dx d/dx f = d^2/dx^2 f
       return std::make_unique<deriv_node>(v, clone());
     }
-    // leibniz d/dy d/dx f = d/dx d/dy f
+    // leibniz rule d/dy d/dx f = d/dx d/dy f
     return std::make_unique<deriv_node>(var, arg->derivative(v));
   }
   std::unique_ptr<expr> simplify() const override;
@@ -601,7 +600,7 @@ struct integral : expr {
     if (upper)
       b = upper->eval(ctx);
     else if (!lower) {
-      // Indefinite integral: treat as integral from 0 to current variable value
+      // indefinite integral treat as integral from 0 to current variable value
       if (ctx.vars.count(var)) {
         b = ctx.vars.at(var);
       }
@@ -610,7 +609,7 @@ struct integral : expr {
     if (std::abs(a - b) < 1e-12 && (lower && upper))
       return 0.0;
 
-    const int n = 1000; // simpson rule
+    const int n = 1000; // simpsons rule
     double h = (b - a) / n;
     double old_v = ctx.vars[var];
 
@@ -771,7 +770,7 @@ inline std::unique_ptr<expr> add::simplify() const {
     }
   }
 
-  // group like terms aX + bX -> (a+b)X
+  // group like terms ax bx to a plus b x
   struct term_group {
     std::unique_ptr<expr> sym;
     double coeff;
@@ -803,7 +802,7 @@ inline std::unique_ptr<expr> add::simplify() const {
       groups.push_back({std::move(s), c});
   }
 
-  // recombine f(y) - f(0) -> int_0^y f dx
+  // recombine f y minus f 0 to int 0 y f dx
   for (size_t i = 0; i < groups.size(); ++i) {
     if (std::abs(groups[i].coeff) < 1e-9)
       continue;
@@ -907,7 +906,7 @@ inline std::unique_ptr<expr> multiply::simplify() const {
     }
   }
 
-  // group powers like x * x^2 -> x^3
+  // group powers like x times x squared to x cubed
   struct factor_group {
     std::unique_ptr<expr> base;
     std::unique_ptr<expr> exponent;
@@ -947,7 +946,8 @@ inline std::unique_ptr<expr> multiply::simplify() const {
 
   if (!skip_one || std::abs(constant - 1.0) > 1e-9) {
     if (std::abs(constant + 1.0) < 1e-9 && !groups.empty()) {
-      // keep as -1 if it's the only constant, but handled in to_string
+      // keep as negative one if it is the only constant but handled in to
+      // string
       final_factors.push_back(std::make_unique<number>(-1.0));
     } else if (std::abs(constant - 1.0) > 1e-9 || groups.empty()) {
       final_factors.push_back(std::make_unique<number>(constant));
@@ -1231,7 +1231,7 @@ func_call::derivative(const std::string &var) const {
 
     if (i == 0 && name == "atan2") {
       // d dy atan2 wrt y
-      // i=0 is y
+      // i zero is y
       auto den = std::make_unique<add>(
           std::make_unique<pow_node>(args[0]->clone(),
                                      std::make_unique<number>(2.0)),
@@ -1381,7 +1381,7 @@ inline std::unique_ptr<expr> integral::simplify() const {
   auto result = symbolic::integrate(*si, var, 0);
   if (result) {
     if (l_sim && u_sim) {
-      // definite integral: f(upper) - f(lower)
+      // definite integral f upper minus f lower
       auto Fu = result->substitute(var, *u_sim);
       auto Fl = result->substitute(var, *l_sim);
       return std::make_unique<add>(

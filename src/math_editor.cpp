@@ -107,7 +107,7 @@ std::string MathPower::to_string() const {
   return "^{" + exponent->to_string() + "}";
 }
 
-// sqrt
+// square root
 MathSqrt::MathSqrt() {
   content = std::make_unique<MathBox>();
   content->parent_node = this;
@@ -145,7 +145,7 @@ std::string MathSqrt::to_string() const {
   return "sqrt(" + content->to_string() + ")";
 }
 
-// int
+// integral
 MathIntegral::MathIntegral() {
   lower = std::make_unique<MathBox>();
   lower->parent_node = this;
@@ -175,7 +175,7 @@ void MathIntegral::draw(cairo_t *cr, double x, double y, double font_size) {
   last_x = x;
   last_y = y;
 
-  // int sym
+  // integral symbol
   cairo_set_font_size(cr, font_size * 1.5);
   cairo_move_to(cr, x, y + font_size * 0.3);
   cairo_show_text(cr, "\u222b");
@@ -183,9 +183,9 @@ void MathIntegral::draw(cairo_t *cr, double x, double y, double font_size) {
   double sym_w = font_size * 0.55;
   double sf = font_size * 0.55;
 
-  // up bound top right of int
+  // upper bound top right of integral
   upper->draw(cr, x + sym_w, y - font_size * 0.7, sf);
-  // lo bound bot right of int
+  // lower bound bottom right of integral
   lower->draw(cr, x + sym_w, y + font_size * 0.3, sf);
 }
 
@@ -203,7 +203,7 @@ std::string MathIntegral::to_string() const {
   return s;
 }
 
-// box
+// math container box
 RenderMetrics MathBox::measure(cairo_t *cr, double font_size) {
   if (nodes.empty()) {
     last_metrics = measure_text(cr, " ", font_size);
@@ -254,7 +254,7 @@ void MathBox::remove(int index) {
   }
 }
 
-// editor
+// math editor logic
 MathEditor::MathEditor() {
   active_box = &root;
   cursor_index = 0;
@@ -272,7 +272,7 @@ void MathEditor::insert_char(const std::string &c) {
     bool is_sqrt = false;
   };
   static const std::vector<Keyword> keywords = {
-      {"int", "\u222b", "\\int ", true}, // struct int
+      {"int", "\u222b", "\\int ", true}, // struct integral
       {"sum", "\u2211", "\\sum "},
       {"prod", "\u220f", "\\prod "},
       {"pi", "\u03c0", "\\pi "},
@@ -305,7 +305,7 @@ void MathEditor::insert_char(const std::string &c) {
         }
         cursor_index -= len;
         if (kw.is_integral) {
-          // insert struct int node
+          // insert struct integral node
           auto integ = std::make_unique<MathIntegral>();
           active_box->insert(cursor_index, std::move(integ));
           cursor_index++;
@@ -335,7 +335,7 @@ void MathEditor::insert_fraction() {
 
   if (cursor_index > 0) {
     int start_idx = cursor_index - 1;
-    // if ) cap balanced range
+    // if ) capture balanced range
     if (active_box->nodes[cursor_index - 1]->to_string() == ")") {
       int depth = 0;
       for (int i = cursor_index - 1; i >= 0; --i) {
@@ -392,8 +392,8 @@ void MathEditor::insert_integral() {
   auto integ_ptr = integ.get();
   active_box->insert(cursor_index, std::move(integ));
   cursor_index++;
-  // cursor in main box use underscore to jump to lo bound
-  (void)integ_ptr; // suppress warn
+  // cursor in main box use underscore to jump to lower bound
+  (void)integ_ptr; // suppress warning
 }
 
 void MathEditor::backspace() {
@@ -431,7 +431,7 @@ void MathEditor::backspace() {
   }
 }
 
-// nav logic below
+// navigation logic
 void MathEditor::insert_sqrt() {
   auto sqrt_node = std::make_unique<MathSqrt>();
   auto sqrt_ptr = sqrt_node.get();
@@ -612,7 +612,7 @@ void MathEditor::measure_and_update_cursor(cairo_t *cr, double x, double y,
   (void)x;
   (void)y;
 
-  // local font for height calculation
+  // Local font for height calculation
   double effective_font_size = font_size * active_box->last_metrics.scale;
 
   if (active_box->nodes.empty()) {
@@ -633,12 +633,12 @@ void MathEditor::measure_and_update_cursor(cairo_t *cr, double x, double y,
 }
 
 static MathBox *hit_test(MathBox *box, double x, double y, int &idx) {
-  // recurse kids
+  // Recurse kids
   for (size_t i = 0; i < box->nodes.size(); ++i) {
     auto &n = box->nodes[i];
     if (n->is_fraction()) {
       auto fr = static_cast<MathFraction *>(n.get());
-      // hit test num den
+      // Hit test num den
       if (y < fr->last_y - 2) {
         auto b = hit_test(fr->numerator.get(), x, y, idx);
         if (b)
@@ -676,7 +676,7 @@ static MathBox *hit_test(MathBox *box, double x, double y, int &idx) {
     }
   }
 
-  // no child hit find idx
+  // No child hit find idx
   if (box->nodes.empty()) {
     idx = 0;
     return box;
@@ -711,7 +711,7 @@ void MathEditor::draw(cairo_t *cr, double x, double y, double font_size) {
   root.draw(cr, x, y, font_size);
   measure_and_update_cursor(cr, x, y, font_size);
 
-  // blink cursor if needed
+  // Blink cursor if needed
   static int blink_counter = 0;
   blink_counter++;
   if ((blink_counter / 20) % 2 == 0) {

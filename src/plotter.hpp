@@ -1,25 +1,27 @@
-#define _USE_MATH_DEFINES
 #include "ast.hpp"
 #include "evaluator.hpp"
-#include <algorithm>
-#include <cairo.h>
+#include <cairo/cairo.h>
 #include <cmath>
-#include <memory>
+#include <functional>
+#include <iostream>
 #include <string>
 #include <vector>
 
+// core plotter class
 class Plotter {
 public:
+  // expression structure
   struct PlotExpr {
     std::unique_ptr<expr> ast;
-    double r = 0.96, g = 0.62, b = 0.04; // orange
+    double r = 0.96, g = 0.62, b = 0.04; // default orange color
     bool visible = true;
-    bool has_y = false;    // if depends on y
-    bool is_polar = false; // r = f(theta)
+    bool has_y = false;    // depends on y
+    bool is_polar = false; // polar coordinate flag
     double theta_min = 0, theta_max = 2 * M_PI;
-    std::string label; // orig text
+    std::string label; // original label text
   };
 
+  // graphing area settings
   struct PlotSettings {
     bool show_grid = true;
     bool show_axis_numbers = true;
@@ -31,27 +33,25 @@ public:
     bool use_radians = true;
     bool x_log_scale = false;
     bool y_log_scale = false;
-    // manual step overrides 0=auto
+    // manual step overrides
     double x_step = 0;
     double y_step = 0;
     std::string x_label = "";
     std::string y_label = "";
   };
 
-  double center_x = 0.0;
-  double center_y = 0.0;
-  double zoom_x = 50.0;
-  double zoom_y = 50.0;
-
+  double center_x = 0, center_y = 0;
+  double zoom_x = 50, zoom_y = 50;
   std::vector<PlotExpr> expressions;
   PlotSettings settings;
 
+  // rendering entry point
   void render(cairo_t *cr, int width, int height, evaluator &eval) {
-    // clear bg
+    // clear background
     cairo_set_source_rgb(cr, 0.05, 0.07, 0.1);
     cairo_paint(cr);
 
-    // xform fns
+    // coordinate conversion helpers
     auto to_screen_x = [&](double x) {
       return width / 2.0 + (x - center_x) * zoom_x;
     };
@@ -74,7 +74,7 @@ public:
     double sx0 = to_screen_x(0);
     double sy0 = to_screen_y(0);
 
-    // draw axes
+    // draw main axes
     if (settings.show_main_axis) {
       cairo_set_source_rgb(cr, 0.3, 0.4, 0.6);
       cairo_set_line_width(cr, 2.0);
@@ -91,7 +91,7 @@ public:
       }
     }
 
-    // draw axis labels
+    // draw numbers
     cairo_set_source_rgb(cr, 0.7, 0.7, 0.7);
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
                            CAIRO_FONT_WEIGHT_NORMAL);
@@ -102,7 +102,7 @@ public:
     double y_start = to_math_y(height);
     double y_end = to_math_y(0);
 
-    // x axis labels
+    // horizontal axis ticks
     if (settings.show_axis_numbers) {
       double step_x =
           (settings.x_step > 0) ? settings.x_step : get_grid_step(zoom_x);
@@ -134,14 +134,14 @@ public:
       }
     }
 
-    // y axis labels
+    // vertical axis ticks
     if (settings.show_axis_numbers) {
       double step_y =
           (settings.y_step > 0) ? settings.y_step : get_grid_step(zoom_y);
       for (double y = std::floor(y_start / step_y) * step_y; y <= y_end;
            y += step_y) {
         if (std::abs(y) < 1e-9)
-          continue; // skip zero
+          continue;
         double sy = to_screen_y(y);
         char buf[32];
         int precision = 0;
@@ -166,7 +166,7 @@ public:
       }
     }
 
-    // draw axis labels (x-label / y-label)
+    // axis labels
     if (!settings.x_label.empty()) {
       cairo_move_to(cr, width - 50, sy0 - 10);
       cairo_show_text(cr, settings.x_label.c_str());
@@ -176,11 +176,10 @@ public:
       cairo_show_text(cr, settings.y_label.c_str());
     }
 
-    // draw arrows
+    // axis arrows
     if (settings.show_arrows) {
       cairo_set_source_rgb(cr, 0.3, 0.4, 0.6);
       if (sx0 >= 0 && sx0 <= width) {
-        // top arrow
         cairo_move_to(cr, sx0, 0);
         cairo_line_to(cr, sx0 - 5, 10);
         cairo_move_to(cr, sx0, 0);
@@ -188,7 +187,6 @@ public:
         cairo_stroke(cr);
       }
       if (sy0 >= 0 && sy0 <= height) {
-        // right arrow
         cairo_move_to(cr, width, sy0);
         cairo_line_to(cr, width - 10, sy0 - 5);
         cairo_move_to(cr, width, sy0);
@@ -197,7 +195,7 @@ public:
       }
     }
 
-    // draw fns
+    // draw expressions
     for (const auto &pe : expressions) {
       if (!pe.visible || !pe.ast)
         continue;
@@ -206,10 +204,7 @@ public:
       cairo_set_line_width(cr, 2.0);
 
       if (pe.has_y) {
-        // Hierarchical Marching Squares 3.0 (Macro/Micro Grid)
-        const int MACRO_GRID = 32;
-        const int MICRO_GRID = 8;
-
+        // recursive quadtree plotter five
         auto eval_fn = [&](double x, double y) -> double {
           eval.set_var("x", x);
           eval.set_var("y", y);
@@ -223,122 +218,244 @@ public:
         auto lerp = [](double vL, double vR, double pL, double pR) {
           if (!std::isfinite(vL) || !std::isfinite(vR))
             return pL;
-          if (std::abs(vL - vR) < 1e-9)
+          if (std::abs(vL - vR) < 1e-12)
             return pL;
-          double t = (0 - vL) / (vR - vL);
-          return pL + t * (pR - pL);
+          return pL + (0 - vL) / (vR - vL) * (pR - pL);
         };
 
-        for (int my = 0; my < height; my += MACRO_GRID) {
-          for (int mx = 0; mx < width; mx += MACRO_GRID) {
-            // Macro-cell check: signs at corners and center
-            double mv00 = eval_fn(to_math_x(mx), to_math_y(my));
-            double mv10 = eval_fn(to_math_x(mx + MACRO_GRID), to_math_y(my));
-            double mv01 = eval_fn(to_math_x(mx), to_math_y(my + MACRO_GRID));
-            double mv11 =
-                eval_fn(to_math_x(mx + MACRO_GRID), to_math_y(my + MACRO_GRID));
-            double mvc = eval_fn(to_math_x(mx + MACRO_GRID / 2.0),
-                                 to_math_y(my + MACRO_GRID / 2.0));
+        auto find_boundary = [&](auto &&check_fn, double pFinite, double pNan) {
+          double low = 0.0, high = 1.0;
+          for (int iter = 0; iter < 10; ++iter) {
+            double mid = (low + high) / 2.0;
+            double pMid = pFinite + mid * (pNan - pFinite);
+            if (std::isfinite(check_fn(pMid)))
+              low = mid;
+            else
+              high = mid;
+          }
+          return pFinite + low * (pNan - pFinite);
+        };
 
-            bool s00 = mv00 > 0, s10 = mv10 > 0, s01 = mv01 > 0, s11 = mv11 > 0,
-                 sc = mvc > 0;
-            bool active = (s00 != s10 || s10 != s11 || s11 != s01 ||
-                           s01 != s00 || s00 != sc);
+        std::function<void(double, double, double, int)> trace_recursive;
+        trace_recursive = [&](double i, double j, double size, int depth) {
+          double u00 = eval_fn(to_math_x(i), to_math_y(j));
+          double u10 = eval_fn(to_math_x(i + size), to_math_y(j));
+          double u11 = eval_fn(to_math_x(i + size), to_math_y(j + size));
+          double u01 = eval_fn(to_math_x(i), to_math_y(j + size));
 
-            if (!active && std::isfinite(mv00) && std::isfinite(mv10) &&
-                std::isfinite(mv01) && std::isfinite(mv11))
-              continue; // Skip empty macro-cell
+          bool has_nan = !std::isfinite(u00) || !std::isfinite(u10) ||
+                         !std::isfinite(u11) || !std::isfinite(u01);
+          bool all_nan = !std::isfinite(u00) && !std::isfinite(u10) &&
+                         !std::isfinite(u11) && !std::isfinite(u01);
 
-            // Subdivide into micro-grid
-            for (int j = my; j < std::min(my + MACRO_GRID, height);
-                 j += MICRO_GRID) {
-              for (int i = mx; i < std::min(mx + MACRO_GRID, width);
-                   i += MICRO_GRID) {
-                double v00 = eval_fn(to_math_x(i), to_math_y(j));
-                double v10 = eval_fn(to_math_x(i + MICRO_GRID), to_math_y(j));
-                double v01 = eval_fn(to_math_x(i), to_math_y(j + MICRO_GRID));
-                double v11 = eval_fn(to_math_x(i + MICRO_GRID),
-                                     to_math_y(j + MICRO_GRID));
+          int index = (std::isfinite(u00) && u00 > 0 ? 1 : 0) |
+                      (std::isfinite(u10) && u10 > 0 ? 2 : 0) |
+                      (std::isfinite(u11) && u11 > 0 ? 4 : 0) |
+                      (std::isfinite(u01) && u01 > 0 ? 8 : 0);
 
-                if (!std::isfinite(v00) && !std::isfinite(v10) &&
-                    !std::isfinite(v01) && !std::isfinite(v11))
-                  continue;
+          bool sign_change = (index != 0 && index != 15);
 
-                int index = (v00 > 0 ? 1 : 0) | (v10 > 0 ? 2 : 0) |
-                            (v11 > 0 ? 4 : 0) | (v01 > 0 ? 8 : 0);
-                if (index == 0 || index == 15)
-                  continue;
+          // recursion depth and size checks
+          if (depth < 8 && size > 2.0) {
+            bool should_recurse = sign_change || (has_nan && !all_nan);
 
-                struct Point {
-                  double x, y;
-                };
-                auto get_edge_pt = [&](int edge) -> Point {
-                  switch (edge) {
-                  case 0:
-                    return {lerp(v00, v10, i, i + MICRO_GRID), (double)j};
-                  case 1:
-                    return {(double)i + MICRO_GRID,
-                            lerp(v10, v11, j, j + MICRO_GRID)};
-                  case 2:
-                    return {lerp(v01, v11, i, i + MICRO_GRID),
-                            (double)j + MICRO_GRID};
-                  case 3:
-                    return {(double)i, lerp(v00, v01, j, j + MICRO_GRID)};
-                  default:
-                    return {0, 0};
-                  }
-                };
+            // test midpoint for hidden features
+            if (!should_recurse) {
+              double um =
+                  eval_fn(to_math_x(i + size / 2.0), to_math_y(j + size / 2.0));
+              if (std::isfinite(um) && (um > 0) != (u00 > 0))
+                should_recurse = true;
+              else if (!std::isfinite(um) != all_nan)
+                should_recurse = true;
+            }
 
-                // Marching Squares segments for each case
-                auto draw_seg = [&](int e1, int e2) {
-                  Point p1 = get_edge_pt(e1), p2 = get_edge_pt(e2);
-                  cairo_move_to(cr, p1.x, p1.y);
-                  cairo_line_to(cr, p2.x, p2.y);
-                };
+            if (should_recurse) {
+              double half = size / 2.0;
+              trace_recursive(i, j, half, depth + 1);
+              trace_recursive(i + half, j, half, depth + 1);
+              trace_recursive(i, j + half, half, depth + 1);
+              trace_recursive(i + half, j + half, half, depth + 1);
+              return;
+            }
+          }
 
-                switch (index) {
-                case 1:
-                case 14:
-                  draw_seg(0, 3);
-                  break;
-                case 2:
-                case 13:
-                  draw_seg(0, 1);
-                  break;
-                case 3:
-                case 12:
-                  draw_seg(1, 3);
-                  break;
-                case 4:
-                case 11:
-                  draw_seg(1, 2);
-                  break;
-                case 5:
-                  draw_seg(0, 1);
-                  draw_seg(2, 3);
-                  break; // Saddle 1
-                case 6:
-                case 9:
-                  draw_seg(0, 2);
-                  break;
-                case 7:
-                case 8:
-                  draw_seg(2, 3);
-                  break;
-                case 10:
-                  draw_seg(0, 3);
-                  draw_seg(1, 2);
-                  break; // Saddle 2
+          // draw leaf
+          if (sign_change || (has_nan && !all_nan)) {
+            struct Point {
+              double x, y;
+            };
+            auto get_pt = [&](int edge) -> Point {
+              switch (edge) {
+              case 0:
+                return {lerp(u00, u10, i, i + size), (double)j};
+              case 1:
+                return {(double)i + size, lerp(u10, u11, j, j + size)};
+              case 2:
+                return {lerp(u01, u11, i, i + size), (double)j + size};
+              case 3:
+                return {(double)i, lerp(u00, u01, j, j + size)};
+              default:
+                return {0, 0};
+              }
+            };
+
+            auto draw_seg = [&](int e1, int e2) {
+              bool ok1 = false, ok2 = false;
+              if (e1 == 0)
+                ok1 = std::isfinite(u00) && std::isfinite(u10);
+              else if (e1 == 1)
+                ok1 = std::isfinite(u10) && std::isfinite(u11);
+              else if (e1 == 2)
+                ok1 = std::isfinite(u01) && std::isfinite(u11);
+              else if (e1 == 3)
+                ok1 = std::isfinite(u00) && std::isfinite(u01);
+
+              if (e2 == 0)
+                ok2 = std::isfinite(u00) && std::isfinite(u10);
+              else if (e2 == 1)
+                ok2 = std::isfinite(u10) && std::isfinite(u11);
+              else if (e2 == 2)
+                ok2 = std::isfinite(u01) && std::isfinite(u11);
+              else if (e2 == 3)
+                ok2 = std::isfinite(u00) && std::isfinite(u01);
+
+              Point p1 = get_pt(e1), p2 = get_pt(e2);
+              if (!ok1 || !ok2) {
+                if (!ok1) {
+                  if (e1 == 0)
+                    p1.x = find_boundary(
+                        [&](double px) {
+                          return eval_fn(to_math_x(px), to_math_y(j));
+                        },
+                        std::isfinite(u00) ? i : i + size,
+                        std::isfinite(u00) ? i + size : i);
+                  else if (e1 == 1)
+                    p1.y = find_boundary(
+                        [&](double py) {
+                          return eval_fn(to_math_x(i + size), to_math_y(py));
+                        },
+                        std::isfinite(u10) ? j : j + size,
+                        std::isfinite(u10) ? j + size : j);
+                  else if (e1 == 2)
+                    p1.x = find_boundary(
+                        [&](double px) {
+                          return eval_fn(to_math_x(px), to_math_y(j + size));
+                        },
+                        std::isfinite(u01) ? i : i + size,
+                        std::isfinite(u01) ? i + size : i);
+                  else if (e1 == 3)
+                    p1.y = find_boundary(
+                        [&](double py) {
+                          return eval_fn(to_math_x(i), to_math_y(py));
+                        },
+                        std::isfinite(u00) ? j : j + size,
+                        std::isfinite(u00) ? j + size : j);
+                }
+                if (!ok2) {
+                  if (e2 == 0)
+                    p2.x = find_boundary(
+                        [&](double px) {
+                          return eval_fn(to_math_x(px), to_math_y(j));
+                        },
+                        std::isfinite(u00) ? i : i + size,
+                        std::isfinite(u00) ? i + size : i);
+                  else if (e2 == 1)
+                    p2.y = find_boundary(
+                        [&](double py) {
+                          return eval_fn(to_math_x(i + size), to_math_y(py));
+                        },
+                        std::isfinite(u10) ? j : j + size,
+                        std::isfinite(u10) ? j + size : j);
+                  else if (e2 == 2)
+                    p2.x = find_boundary(
+                        [&](double px) {
+                          return eval_fn(to_math_x(px), to_math_y(j + size));
+                        },
+                        std::isfinite(u01) ? i : i + size,
+                        std::isfinite(u01) ? i + size : i);
+                  else if (e2 == 3)
+                    p2.y = find_boundary(
+                        [&](double py) {
+                          return eval_fn(to_math_x(i), to_math_y(py));
+                        },
+                        std::isfinite(u00) ? j : j + size,
+                        std::isfinite(u00) ? j + size : j);
                 }
               }
+              if (std::isfinite(p1.x) && std::isfinite(p1.y) &&
+                  std::isfinite(p2.x) && std::isfinite(p2.y)) {
+                cairo_move_to(cr, p1.x, p1.y);
+                cairo_line_to(cr, p2.x, p2.y);
+              }
+            };
+
+            auto solve_ambiguous = [&](int type) {
+              double center =
+                  eval_fn(to_math_x(i + size / 2.0), to_math_y(j + size / 2.0));
+              if (type == 5) { // case 5 0 1 are positive
+                if (center > 0) {
+                  draw_seg(0, 3);
+                  draw_seg(1, 2);
+                } else {
+                  draw_seg(0, 1);
+                  draw_seg(2, 3);
+                }
+              } else { // case 10 1 3 are positive
+                if (center > 0) {
+                  draw_seg(0, 1);
+                  draw_seg(2, 3);
+                } else {
+                  draw_seg(0, 3);
+                  draw_seg(1, 2);
+                }
+              }
+            };
+
+            switch (index) {
+            case 1:
+            case 14:
+              draw_seg(0, 3);
+              break;
+            case 2:
+            case 13:
+              draw_seg(0, 1);
+              break;
+            case 3:
+            case 12:
+              draw_seg(1, 3);
+              break;
+            case 4:
+            case 11:
+              draw_seg(1, 2);
+              break;
+            case 5:
+              solve_ambiguous(5);
+              break;
+            case 6:
+            case 9:
+              draw_seg(0, 2);
+              break;
+            case 7:
+            case 8:
+              draw_seg(2, 3);
+              break;
+            case 10:
+              solve_ambiguous(10);
+              break;
             }
+          }
+        };
+
+        const double CHUNK_SIZE = 64.0;
+        for (double gy = 0; gy < height; gy += CHUNK_SIZE) {
+          for (double gx = 0; gx < width; gx += CHUNK_SIZE) {
+            trace_recursive(gx, gy, CHUNK_SIZE, 0);
           }
         }
         cairo_stroke(cr);
       } else if (pe.is_polar) {
-        // polar r = f(theta)
+        // polar plots
         bool first = true;
-        // adaptive res 100 step/rad min 500 max 10000
         double theta_range = std::abs(pe.theta_max - pe.theta_min);
         double steps = std::clamp(theta_range * 100.0, 500.0, 10000.0);
         double d_theta = (pe.theta_max - pe.theta_min) / steps;
@@ -369,6 +486,7 @@ public:
         }
         cairo_stroke(cr);
       } else {
+        // standard f(x) functions
         bool first = true;
         double prev_y = 0.0;
         for (int i = 0; i <= width; ++i) {
@@ -379,8 +497,7 @@ public:
             if (std::isfinite(y)) {
               double sy = to_screen_y(y);
 
-              // discontinuity check e.g. tanx skip line if jump big and sign
-              // flip
+              // skip discontinuities
               bool is_discontinuous =
                   !first && (std::abs(y - prev_y) > (height / zoom_y) * 10.0) &&
                   ((y > 0) != (prev_y > 0));
@@ -402,14 +519,12 @@ public:
         cairo_stroke(cr);
       }
 
-      // draw label nearby
+      // curve identification labels
       if (!pe.label.empty()) {
         double lx = 0, ly = 0;
         bool found = false;
 
-        // find rightmost visible point
         if (pe.has_y) {
-          // implicit plot pick point on screen
           lx = width - 80;
           ly = height - (40 + (&pe - &expressions[0]) * 20);
           found = true;
@@ -450,8 +565,9 @@ public:
   }
 
 private:
+  // grid step calculation
   double get_grid_step(double zoom) {
-    double pixels_per_step = 80.0; // desired px between grid lines
+    double pixels_per_step = 80.0;
     double ideal_step = pixels_per_step / zoom;
 
     double log_step = std::log10(ideal_step);
@@ -472,6 +588,7 @@ private:
     return base * actual_factor;
   }
 
+  // draw gridlines
   template <typename F1, typename F2, typename F3, typename F4>
   void draw_grid(cairo_t *cr, int width, int height, F1 to_screen_x,
                  F2 to_screen_y, F3 to_math_x, F4 to_math_y) {
@@ -486,7 +603,6 @@ private:
     double step_x = get_grid_step(zoom_x);
     double step_y = get_grid_step(zoom_y);
 
-    // x grid
     for (double x = std::floor(x_start / step_x) * step_x; x <= x_end;
          x += step_x) {
       double sx = to_screen_x(x);
@@ -494,7 +610,6 @@ private:
       cairo_line_to(cr, sx, height);
       cairo_stroke(cr);
     }
-    // y grid
     for (double y = std::floor(y_start / step_y) * step_y; y <= y_end;
          y += step_y) {
       double sy = to_screen_y(y);
@@ -503,7 +618,7 @@ private:
       cairo_stroke(cr);
     }
 
-    // minor gridlines
+    // draw minor gridlines
     if (settings.show_minor_gridlines) {
       cairo_set_source_rgba(cr, 0.1, 0.15, 0.25, 0.4);
       double mstep_x = step_x / 5.0;

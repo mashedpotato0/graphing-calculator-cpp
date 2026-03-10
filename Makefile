@@ -15,7 +15,7 @@ $(TARGET): $(SRCS) src/main.cpp src/ast.hpp src/ast_ext.hpp
 $(REPL): $(SRCS) src/main_repl.cpp src/ast.hpp src/ast_ext.hpp
 	$(CXX) $(CXXFLAGS) $(SRCS) src/main_repl.cpp -o $@ -lreadline $(GTK_FLAGS)
 
-$(VIEWER): $(SRCS) src/viewer.cpp src/renderer.hpp src/ast.hpp src/ast_ext.hpp
+$(VIEWER): $(SRCS) src/viewer.cpp src/renderer.hpp src/plotter.hpp src/ast.hpp src/ast_ext.hpp
 	$(CXX) $(CXXFLAGS) $(SRCS) src/viewer.cpp -o $@ $(GTK_FLAGS)
 
 clean:

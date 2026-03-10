@@ -80,12 +80,12 @@ struct EquationData {
   std::unique_ptr<MathEditor> editor;
   GtkWidget *color_btn;
   GtkWidget *delete_btn;
-  GtkWidget *slider_box; // sliders for params
+  GtkWidget *slider_box; // Sliders for params
   GtkWidget *result_label;
   GtkWidget *symbolic_result_area;
   std::unique_ptr<expr> ast;
-  std::unique_ptr<expr> result_ast; // symbolic result
-  std::string original_expression;  // for labels
+  std::unique_ptr<expr> result_ast; // Symbolic result
+  std::string original_expression;  // Original text for labels
   std::string error;
   int color_idx;
   bool visible = true;
@@ -101,7 +101,7 @@ struct EquationData {
   double slider_min_val = -10, slider_max_val = 10;
   double slider_speed = 1.0;
   double slider_step = 0.1;
-  GtkWidget *main_area; // main graph ref
+  GtkWidget *main_area; // Main graph ref
 };
 
 static void add_equation_row(GtkWidget *vbox, GtkWidget *drawing_area);
@@ -257,7 +257,7 @@ static void update_plotter(GtkWidget *area) {
     if (s.empty())
       continue;
 
-    // smart strip y = ...
+    // smart strip y prefix
     size_t eq_pos = s.find('=');
     std::string clean_s = s;
     bool is_plot = true;
@@ -274,7 +274,7 @@ static void update_plotter(GtkWidget *area) {
       if (lhs == "y" || (lhs.find("(x)") != std::string::npos &&
                          lhs.find(',') == std::string::npos)) {
         clean_s = rhs;
-        // if rhs has y, it's implicit y = f(x, y)
+        // if rhs has y it is implicit y = f(x, y)
         if (rhs.find('y') != std::string::npos) {
           clean_s = "(y)-(" + rhs + ")";
           is_implicit = true;
@@ -289,13 +289,13 @@ static void update_plotter(GtkWidget *area) {
         // global assign a = 5
         is_plot = false;
       } else {
-        // generic implicit A = B -> (A) - (B) = 0
+        // generic implicit a = b -> a - b = 0
         clean_s = "(" + lhs + ")-(" + rhs + ")";
         is_implicit = true;
       }
     } else {
       clean_s = s;
-      // check if it has 'y' even without '='
+      // check if it has y even without equals
       if (clean_s.find('y') != std::string::npos) {
         is_implicit = true;
       } else {
@@ -536,7 +536,7 @@ static void trigger_equation_update(EquationData *eq_data) {
       eq_data->original_expression = text;
       eq_data->error = "";
 
-      // update sliders for eq
+      // Update sliders for eq
       GtkWidget *area = static_cast<GtkWidget *>(
           g_object_get_data(G_OBJECT(eq_data->editor_area), "drawing-area"));
       sync_sliders(eq_data, area);
@@ -546,7 +546,7 @@ static void trigger_equation_update(EquationData *eq_data) {
     eq_data->error = e.what();
   }
 
-  // refresh plotter
+  // Refresh plotter
   GtkWidget *area = static_cast<GtkWidget *>(
       g_object_get_data(G_OBJECT(eq_data->editor_area), "drawing-area"));
   update_plotter(area);
@@ -568,13 +568,13 @@ static void on_editor_draw(GtkDrawingArea *area, cairo_t *cr, int width,
   (void)width;
   (void)height;
   EquationData *eq = static_cast<EquationData *>(data);
-  // draw bg transparent
+  // Draw bg transparent
   cairo_set_source_rgba(cr, 0, 0, 0, 0);
   cairo_paint(cr);
 
   cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
   auto metrics = eq->editor->root.measure(cr, 20.0);
-  // vertical center based on content with generous padding
+  // Vertical center based on content with generous padding
   eq->editor->draw(cr, 10, metrics.ascent + 10, 20.0);
 }
 
@@ -585,7 +585,7 @@ static void on_symbolic_draw(GtkDrawingArea *area, cairo_t *cr, int width,
   (void)height;
   EquationData *eq = static_cast<EquationData *>(data);
   if (eq->result_ast) {
-    // opacity gray color
+    // Opacity gray color
     cairo_set_source_rgba(cr, 0.53, 0.53, 0.53, 1.0);
     MathRenderer renderer(cr, 16.0);
     auto box = renderer.get_total_box(*eq->result_ast);
@@ -625,9 +625,9 @@ static gboolean on_editor_key(GtkEventControllerKey *controller, guint keyval,
       }
     }
   } else if (keyval == GDK_KEY_Return) {
-    // make new line maybe
+    // Make new line maybe
   } else {
-    // print ascii chars
+    // Print ascii chars
     if (keyval >= 32 && keyval <= 126) {
       std::string s(1, (char)keyval);
       editor->insert_char(s);
@@ -651,7 +651,7 @@ static void on_editor_click(GtkGestureClick *gesture, int n_press, double x,
   gtk_widget_queue_draw(eq->editor_area);
 }
 
-// end of click navigation
+// End of click navigation
 
 static void on_add_clicked(GtkButton *btn, gpointer data) {
   (void)data;
@@ -669,7 +669,7 @@ static void on_slider_changed(GtkRange *range, gpointer data) {
 
   GtkWidget *val_label =
       GTK_WIDGET(g_object_get_data(G_OBJECT(range), "val-label"));
-  // update value label
+  // Update value label
   char buf[64];
   snprintf(buf, sizeof(buf), "%.2f", value);
   gtk_label_set_text(GTK_LABEL(val_label), buf);
@@ -681,7 +681,7 @@ static void on_slider_changed(GtkRange *range, gpointer data) {
     eq->editor->set_expression(buf);
     gtk_widget_queue_draw(eq->editor_area);
 
-    // update ast for plot change
+    // Update ast for plot change
     auto tokens = tokenize(buf);
     parser p(tokens);
     try {
@@ -711,14 +711,14 @@ static void on_delete_clicked(GtkButton *btn, gpointer data) {
 
 static void on_slider_bound_changed(GtkEditable * /*ed*/, gpointer data) {
   GtkWidget *area = GTK_WIDGET(data);
-  // redraw main for context update
+  // Redraw main for context update
   gtk_widget_queue_draw(area);
 }
 
 // use shared on slider bound changed
 
 static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
-  // clear existing sliders in eq box
+  // Clear existing sliders in eq box
   GtkWidget *child = gtk_widget_get_first_child(eq->slider_box);
   while (child) {
     GtkWidget *next = gtk_widget_get_next_sibling(child);
@@ -736,7 +736,7 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   lhs.erase(0, lhs.find_first_not_of(" \t"));
   lhs.erase(lhs.find_last_not_of(" \t") + 1);
 
-  // simple assign check one word lhs
+  // Simple assign check one word lhs
   bool is_assignment = !lhs.empty();
   for (char c : lhs)
     if (!std::isalnum(c) && c != '_' && c != '\\') {
@@ -744,7 +744,7 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
       break;
     }
 
-  // remove spaces and slash for compare
+  // Remove spaces and slash for compare
   std::string lhs_check = lhs;
   lhs_check.erase(
       std::remove_if(lhs_check.begin(), lhs_check.end(),
@@ -767,12 +767,12 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
 
   double cur_val = eval_engine.ctx.vars[v];
 
-  // slider row with play button
+  // Slider row with play button
   GtkWidget *slider_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
   gtk_widget_set_margin_start(slider_hbox, 4);
   gtk_widget_set_margin_end(slider_hbox, 4);
 
-  // play btn
+  // Play btn
   auto anim = std::make_unique<SliderAnimData>();
   GtkWidget *play_btn =
       gtk_button_new_from_icon_name("media-playback-start-symbolic");
@@ -780,7 +780,7 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   gtk_widget_add_css_class(play_btn, "slider-play-btn");
   gtk_widget_set_size_request(play_btn, 24, 24);
 
-  // min bound entry
+  // Min bound entry
   GtkWidget *min_entry = gtk_entry_new();
   eq->slider_min_entry = min_entry;
   char min_buf[32];
@@ -789,14 +789,14 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   gtk_widget_set_size_request(min_entry, 45, -1);
   gtk_widget_add_css_class(min_entry, "slider-bound-entry");
 
-  // slider
+  // Slider
   GtkWidget *slider = gtk_scale_new_with_range(
       GTK_ORIENTATION_HORIZONTAL, eq->slider_min_val, eq->slider_max_val, 0.1);
   gtk_range_set_value(GTK_RANGE(slider), cur_val);
   gtk_widget_set_hexpand(slider, TRUE);
   gtk_scale_set_draw_value(GTK_SCALE(slider), FALSE);
 
-  // max bound entry
+  // Max bound entry
   GtkWidget *max_entry = gtk_entry_new();
   eq->slider_max_entry = max_entry;
   char max_buf[32];

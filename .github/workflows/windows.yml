@@ -21,7 +21,7 @@ jobs:
             mingw-w64-ucrt-x86_64-pkg-config
             make
 
-      - name: compile and package
+      - name: compile and gather
         shell: msys2 {0}
         run: |
           make viewer
@@ -30,7 +30,13 @@ jobs:
           cp -r assets standalone_release/ 2>/dev/null || true
           ldd viewer.exe | grep -io '/ucrt64/bin/.*\.dll' | xargs -I{} cp "{}" standalone_release/
 
+      - name: pack into single exe
+        shell: bash
+        run: |
+          curl -Lo warp-packer.exe https://github.com/dgiagio/warp/releases/download/v0.3.0/windows-x64.warp-packer.exe
+          ./warp-packer.exe --arch windows-x64 --input_dir standalone_release --exec viewer.exe --output graphing-calculator.exe
+
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-release
-          path: standalone_release/
+          name: windows-single-exe
+          path: graphing-calculator.exe

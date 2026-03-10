@@ -58,7 +58,7 @@ static std::unique_ptr<expr> add_e(std::unique_ptr<expr> l,
                                    std::unique_ptr<expr> r) {
   return std::make_unique<add>(std::move(l), std::move(r));
 }
-// a - b is a + -1*b
+// subtraction a minus b is a plus negative one times b
 static std::unique_ptr<expr> sub_e(std::unique_ptr<expr> l,
                                    std::unique_ptr<expr> r) {
   return add_e(std::move(l), mul(num(-1.0), std::move(r)));
@@ -108,7 +108,7 @@ static bool contains_var(const expr &e, const std::string &var) {
 // get numeric value
 static std::optional<double> num_val(const expr &e) { return e.get_number(); }
 
-// extract coeff and power from k*x^n
+// extract coefficient and power from monomial
 static bool extract_monomial(const expr &e, const std::string &var,
                              double &coeff, double &power) {
   if (auto n = dynamic_cast<const number *>(&e)) {
@@ -146,12 +146,13 @@ static bool extract_monomial(const expr &e, const std::string &var,
   return false;
 }
 
-// eval const to num
+// evaluate constant to number
 static std::unique_ptr<expr> eval_const(const expr &e, const std::string &var) {
   context ctx;
   ctx.builtins["sin"] = ctx.builtins["cos"] = ctx.builtins["tan"] =
       ctx.builtins["exp"] = ctx.builtins["log"] = ctx.builtins["ln"] =
-          ctx.builtins["sqrt"] = [](double x) { return x; }; // dummy for const
+          ctx.builtins["sqrt"] =
+              [](double x) { return x; }; // dummy for constant
   ctx.builtins["sin"] = [](double x) { return std::sin(x); };
   ctx.builtins["cos"] = [](double x) { return std::cos(x); };
   ctx.builtins["tan"] = [](double x) { return std::tan(x); };
@@ -200,7 +201,7 @@ static std::unique_ptr<expr> flatten_frac_product(const expr &e) {
     return div_e(mul(ld->left->clone(), rd->left->clone()),
                  mul(ld->right->clone(), rd->right->clone()))
         ->simplify();
-  // k*(a/b) or (a/b)*k to (ka)/b
+  // constant times fraction to numerator multiplication
   if (ld && ld->left && ld->right)
     return div_e(mul(m->right->clone(), ld->left->clone()), ld->right->clone())
         ->simplify();
@@ -284,6 +285,7 @@ static std::unique_ptr<expr> to_exact_expr(double v) {
 
 static std::vector<std::complex<double>>
 find_roots_dk(const std::map<int, double> &coeffs) {
+  // durand-kerner root finding
   int deg = coeffs.rbegin()->first;
   std::vector<std::complex<double>> R(deg);
   std::complex<double> initial(0.4, 0.9);
@@ -309,7 +311,7 @@ find_roots_dk(const std::map<int, double> &coeffs) {
   return R;
 }
 
-// liate order: log invtrig algebraic trig exp
+// liate order log inverse trig algebraic trig exponential
 static int liate(const expr &e, const std::string & /*var*/) {
   if (auto f = dynamic_cast<const func_call *>(&e)) {
     const auto &n = f->name;
@@ -346,6 +348,7 @@ std::unique_ptr<expr> integrate(const expr &e, const std::string &var,
 #define TRY(fn)                                                                \
   if (auto res = fn)                                                           \
   return res->simplify()
+  // constant rule
   TRY(try_constant_rule(*s, var));
   TRY(try_sum_rule(*s, var, depth));
   TRY(try_constant_multiple_rule(*s, var, depth));
@@ -358,7 +361,7 @@ std::unique_ptr<expr> integrate(const expr &e, const std::string &var,
   TRY(try_hyperbolic_rule(*s, var));
   TRY(try_inverse_hyperbolic_rule(*s, var));
   TRY(try_chain_patterns(*s, var));
-  // reduce monomials before sub
+  // reduce monomials before substitution
   if (auto dv = dynamic_cast<const divide *>(s.get())) {
     double nc, np, dc, dp;
     if (extract_monomial(*dv->left, var, nc, np) &&
@@ -503,10 +506,10 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
 
     double disc = b * b - 4 * a * c;
     if (std::abs(disc) < 1e-9) {
-      // d = 0 pfd case
-      // r = -b/2a
-      // mx+n = A(x-r) + B = Ax + (B-Ar)
-      // a = m/a b = n+mr/a
+      // discriminant zero pfd case
+      // root is negative b over two a
+      // linear numerator split into partial fractions
+      // specific partial fraction coefficients
       double r = -b / (2.0 * a);
       double A = m / a;
       double B = (n + m * r) / a;
@@ -518,7 +521,7 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
         return t1;
       return add_e(std::move(t1), std::move(t2));
     } else if (disc > 1e-9) {
-      // d > 0 pure pfd
+      // discriminant positive pure pfd
       double r1 = (-b + std::sqrt(disc)) / (2.0 * a);
       double r2 = (-b - std::sqrt(disc)) / (2.0 * a);
       // a = pr1/qp r1 b = pr2/qp r2
@@ -530,7 +533,7 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
                     func("log", sub_e(var_node(var), to_exact_expr(r2))));
       return add_e(std::move(t1), std::move(t2));
     } else {
-      // d < 0 arc tan log part
+      // arctan and log part
       auto log_part =
           mul(to_exact_expr(m / (2.0 * a)), func("log", d->right->clone()));
       double rem_n = n - (m * b) / (2.0 * a);
@@ -552,17 +555,16 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
   }
 
   if (deg_n >= deg_d) {
-    // poly div P/Q = S + R/Q
-    // simple cases only
+    // polynomial division
     if (deg_d == 2 && deg_n == 2) {
       double a = den_p[2], b = den_p[1], c = den_p[0];
       double m = num_p[2], n = num_p[1], l = num_p[0];
       double quot = m / a;
-      // r = p minus quot q
+      // remainder is p minus quotient q
       double r1 = n - quot * b;
       double r0 = l - quot * c;
       auto term1 = mul(num(quot), var_node(var));
-      // recurse for R/Q
+      // recurse for remainder
       auto sub_num = add_e(mul(num(r1), var_node(var)), num(r0));
       auto sub_int = integrate(*div_e(std::move(sub_num), d->right->clone()),
                                var, depth + 1);
@@ -620,6 +622,7 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
   }
 
   if (deg_d == 3) {
+    // cubic denominator
     double a = den_p[3], b = den_p[2], c = den_p[1], d_const = den_p[0];
     if (std::abs(d_const) < 1e-9 && std::abs(c) > 1e-9) {
       // qx is x ax2 bx c
@@ -644,7 +647,7 @@ try_rational_rule(const expr &e, const std::string &var, int depth) {
             mul(to_exact_expr(C),
                 func("log", sub_e(var_node(var), to_exact_expr(r2)))));
       } else {
-        // fallback to A/x + (Bx+C)/(ax^2+bx+c)
+        // fallback to partial fraction decomposition
         double A = l / c;
         double B_coeff = m - (l * a) / c;
         double C_coeff = n - (l * b) / c;
@@ -685,7 +688,7 @@ static std::unique_ptr<expr> try_exp_rule(const expr &e,
             return mul(num(1.0 / a), func("exp", p->exponent->clone()));
         }
         if (auto bv = num_val(*p->base)) {
-          if (std::abs(*bv - 2.718281828459045) < 1e-9) // fallback for e as num
+          if (std::abs(*bv - 2.718281828459045) < 1e-9) // fallback for e
             return mul(num(1.0 / a), func("exp", p->exponent->clone()));
           return div_e(e.clone(), num(a * std::log(*bv)));
         }
@@ -715,7 +718,7 @@ static std::unique_ptr<expr> try_log_rule(const expr &e,
   return nullptr;
 }
 
-// trig rules
+// trigonometric rules
 static std::unique_ptr<expr> try_trig_rule(const expr &e,
                                            const std::string &var) {
   if (auto f = dynamic_cast<const func_call *>(&e)) {
@@ -736,7 +739,7 @@ static std::unique_ptr<expr> try_trig_rule(const expr &e,
         return func("log", sub_e(func("csc", var_node(var)),
                                  func("cot", var_node(var))));
     }
-    // handle sin(ax+b)
+    // handle sin ax+b
     double a, b;
     if (f->args.size() == 1 && extract_linear(*f->args[0], var, a, b)) {
       if (f->name == "sin")
