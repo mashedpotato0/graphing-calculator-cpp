@@ -236,13 +236,11 @@ public:
           return pFinite + low * (pNan - pFinite);
         };
 
-        std::function<void(double, double, double, int)> trace_recursive;
-        trace_recursive = [&](double i, double j, double size, int depth) {
-          double u00 = eval_fn(to_math_x(i), to_math_y(j));
-          double u10 = eval_fn(to_math_x(i + size), to_math_y(j));
-          double u11 = eval_fn(to_math_x(i + size), to_math_y(j + size));
-          double u01 = eval_fn(to_math_x(i), to_math_y(j + size));
-
+        std::function<void(double, double, double, int, double, double, double,
+                           double)>
+            trace_recursive;
+        trace_recursive = [&](double i, double j, double size, int depth,
+                              double u00, double u10, double u11, double u01) {
           bool has_nan = !std::isfinite(u00) || !std::isfinite(u10) ||
                          !std::isfinite(u11) || !std::isfinite(u01);
           bool all_nan = !std::isfinite(u00) && !std::isfinite(u10) &&
@@ -255,8 +253,8 @@ public:
 
           bool sign_change = (index != 0 && index != 15);
 
-          // recursion depth and size checks
-          if (depth < 8 && size > 2.0) {
+          // recursion depth and size checks - increased depth for smoothness
+          if (depth < 12 && size > 0.5) {
             bool should_recurse = sign_change || (has_nan && !all_nan);
 
             // test midpoint for hidden features
@@ -271,10 +269,29 @@ public:
 
             if (should_recurse) {
               double half = size / 2.0;
-              trace_recursive(i, j, half, depth + 1);
-              trace_recursive(i + half, j, half, depth + 1);
-              trace_recursive(i, j + half, half, depth + 1);
-              trace_recursive(i + half, j + half, half, depth + 1);
+              double hm_top = eval_fn(to_math_x(i + half), to_math_y(j));
+              double hm_bottom =
+                  eval_fn(to_math_x(i + half), to_math_y(j + size));
+              double hm_left = eval_fn(to_math_x(i), to_math_y(j + half));
+              double hm_right =
+                  eval_fn(to_math_x(i + size), to_math_y(j + half));
+              double hm_center =
+                  eval_fn(to_math_x(i + half), to_math_y(j + half));
+
+              // 00 -- top -- 10
+              // |     |      |
+              // left-center-right
+              // |     |      |
+              // 01 -- bottom- 11
+
+              trace_recursive(i, j, half, depth + 1, u00, hm_top, hm_center,
+                              hm_left);
+              trace_recursive(i + half, j, half, depth + 1, hm_top, u10,
+                              hm_right, hm_center);
+              trace_recursive(i, j + half, half, depth + 1, hm_left, hm_center,
+                              hm_bottom, u01);
+              trace_recursive(i + half, j + half, half, depth + 1, hm_center,
+                              hm_right, u11, hm_bottom);
               return;
             }
           }
@@ -449,7 +466,12 @@ public:
         const double CHUNK_SIZE = 64.0;
         for (double gy = 0; gy < height; gy += CHUNK_SIZE) {
           for (double gx = 0; gx < width; gx += CHUNK_SIZE) {
-            trace_recursive(gx, gy, CHUNK_SIZE, 0);
+            double u00 = eval_fn(to_math_x(gx), to_math_y(gy));
+            double u10 = eval_fn(to_math_x(gx + CHUNK_SIZE), to_math_y(gy));
+            double u11 =
+                eval_fn(to_math_x(gx + CHUNK_SIZE), to_math_y(gy + CHUNK_SIZE));
+            double u01 = eval_fn(to_math_x(gx), to_math_y(gy + CHUNK_SIZE));
+            trace_recursive(gx, gy, CHUNK_SIZE, 0, u00, u10, u11, u01);
           }
         }
         cairo_stroke(cr);
