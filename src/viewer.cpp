@@ -780,14 +780,27 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   gtk_widget_add_css_class(play_btn, "slider-play-btn");
   gtk_widget_set_size_request(play_btn, 24, 24);
 
-  // Min bound entry
+  // Min label and entry
+  GtkWidget *min_label = gtk_label_new("-"); // Symbol or "Min:"
+  gtk_widget_add_css_class(min_label, "slider-param-label");
   GtkWidget *min_entry = gtk_entry_new();
   eq->slider_min_entry = min_entry;
   char min_buf[32];
   snprintf(min_buf, sizeof(min_buf), "%.2f", eq->slider_min_val);
   gtk_editable_set_text(GTK_EDITABLE(min_entry), min_buf);
-  gtk_widget_set_size_request(min_entry, 45, -1);
+  gtk_widget_set_size_request(min_entry, 50, -1);
   gtk_widget_add_css_class(min_entry, "slider-bound-entry");
+
+  // Max label and entry
+  GtkWidget *max_label = gtk_label_new("-"); // Symbol or "Max:"
+  gtk_widget_add_css_class(max_label, "slider-param-label");
+  GtkWidget *max_entry = gtk_entry_new();
+  eq->slider_max_entry = max_entry;
+  char max_buf[32];
+  snprintf(max_buf, sizeof(max_buf), "%.2f", eq->slider_max_val);
+  gtk_editable_set_text(GTK_EDITABLE(max_entry), max_buf);
+  gtk_widget_set_size_request(max_entry, 50, -1);
+  gtk_widget_add_css_class(max_entry, "slider-bound-entry");
 
   // Slider
   GtkWidget *slider = gtk_scale_new_with_range(
@@ -795,15 +808,6 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   gtk_range_set_value(GTK_RANGE(slider), cur_val);
   gtk_widget_set_hexpand(slider, TRUE);
   gtk_scale_set_draw_value(GTK_SCALE(slider), FALSE);
-
-  // Max bound entry
-  GtkWidget *max_entry = gtk_entry_new();
-  eq->slider_max_entry = max_entry;
-  char max_buf[32];
-  snprintf(max_buf, sizeof(max_buf), "%.2f", eq->slider_max_val);
-  gtk_editable_set_text(GTK_EDITABLE(max_entry), max_buf);
-  gtk_widget_set_size_request(max_entry, 45, -1);
-  gtk_widget_add_css_class(max_entry, "slider-bound-entry");
 
   // value label
   char val_buf[32];
@@ -832,7 +836,7 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   GtkWidget *params_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_widget_set_margin_start(params_hbox, 32);
 
-  GtkWidget *speed_label = gtk_label_new("Speed:");
+  GtkWidget *speed_label = gtk_label_new("SPEED:");
   gtk_widget_add_css_class(speed_label, "slider-param-label");
   GtkWidget *speed_entry = gtk_entry_new();
   eq->slider_speed_entry = speed_entry;
@@ -841,7 +845,7 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
   gtk_editable_set_text(GTK_EDITABLE(speed_entry), speed_buf);
   gtk_widget_set_size_request(speed_entry, 35, -1);
 
-  GtkWidget *step_label = gtk_label_new("Step:");
+  GtkWidget *step_label = gtk_label_new("STEP:");
   gtk_widget_add_css_class(step_label, "slider-param-label");
   GtkWidget *step_entry = gtk_entry_new();
   eq->slider_step_entry = step_entry;
@@ -854,11 +858,6 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
                    drawing_area);
   g_signal_connect(step_entry, "changed", G_CALLBACK(on_slider_bound_changed),
                    drawing_area);
-
-  gtk_box_append(GTK_BOX(params_hbox), speed_label);
-  gtk_box_append(GTK_BOX(params_hbox), speed_entry);
-  gtk_box_append(GTK_BOX(params_hbox), step_label);
-  gtk_box_append(GTK_BOX(params_hbox), step_entry);
 
   // err label
   GtkWidget *err_label = gtk_label_new("");
@@ -882,10 +881,17 @@ static void sync_sliders(EquationData *eq, GtkWidget *drawing_area) {
 
   g_signal_connect(play_btn, "clicked", G_CALLBACK(on_play_clicked), anim_ptr);
 
+  // Reorganizing: keep slider row minimal
   gtk_box_append(GTK_BOX(slider_hbox), play_btn);
-  gtk_box_append(GTK_BOX(slider_hbox), min_entry);
   gtk_box_append(GTK_BOX(slider_hbox), slider);
-  gtk_box_append(GTK_BOX(slider_hbox), max_entry);
+
+  // Move bounds to second row
+  gtk_box_append(GTK_BOX(params_hbox), min_entry);
+  gtk_box_append(GTK_BOX(params_hbox), max_entry);
+  gtk_box_append(GTK_BOX(params_hbox), speed_label);
+  gtk_box_append(GTK_BOX(params_hbox), speed_entry);
+  gtk_box_append(GTK_BOX(params_hbox), step_label);
+  gtk_box_append(GTK_BOX(params_hbox), step_entry);
 
   gtk_box_append(GTK_BOX(eq->slider_box), slider_hbox);
   gtk_box_append(GTK_BOX(eq->slider_box), params_hbox);
